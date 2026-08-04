@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -170,6 +171,40 @@ func (s *Store) Latest(ctx context.Context, projectID string) (string, error) {
 		return "", nil
 	}
 	return id, err
+}
+
+// File is one entry in a version's manifest.
+type File struct {
+	Path    string
+	BlobSHA string
+	Size    int64
+}
+
+// VersionFiles returns a version's manifest (for serving and export). Ordered
+// by path so callers get a stable listing.
+func (s *Store) VersionFiles(ctx context.Context, projectID, versionID string) ([]File, error) {
+	rows, err := s.db.R.QueryContext(ctx,
+		`SELECT path, blob_sha, size FROM version_files WHERE project_id = ? AND version_id = ? ORDER BY path`,
+		projectID, versionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []File
+	for rows.Next() {
+		var f File
+		if err := rows.Scan(&f.Path, &f.BlobSHA, &f.Size); err != nil {
+			return nil, err
+		}
+		out = append(out, f)
+	}
+	return out, rows.Err()
+}
+
+// Open returns a reader for a content-addressed blob (serving/export read path;
+// no workspace materialization needed).
+func (s *Store) Open(blobSHA string) (io.ReadCloser, error) {
+	return os.Open(filepath.Join(s.casDir, blobSHA))
 }
 
 func (s *Store) ListVersions(ctx context.Context, projectID string) ([]VersionMeta, error) {

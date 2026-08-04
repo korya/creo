@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/signal"
@@ -39,6 +40,14 @@ func main() {
 		err = cmdSay(os.Args[2:])
 	case "watch":
 		err = cmdWatch(os.Args[2:])
+	case "publish":
+		err = cmdProjectAction(os.Args[2:], "publish")
+	case "rollback":
+		err = cmdProjectAction(os.Args[2:], "rollback")
+	case "preview":
+		err = cmdPreview(os.Args[2:])
+	case "export":
+		err = cmdExport(os.Args[2:])
 	case "tenant":
 		err = cmdTenant(os.Args[2:])
 	case "token":
@@ -179,6 +188,8 @@ func cmdServe(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	addr := fs.String("addr", "127.0.0.1:8080", "listen address")
 	data := fs.String("data", "./data", "data directory")
+	serveAddr := fs.String("serve-addr", "127.0.0.1:8081", "listen address for published/preview sites")
+	publicURL := fs.String("public-url", "", "public base URL of serve-addr (default: http://serve-addr)")
 	modelSpec := fs.String("model", "anthropic:claude-sonnet-5", "model spec: anthropic:<id> or fake:<script>")
 	workers := fs.Int("workers", 2, "concurrent runs")
 	leaseTTL := fs.Duration("lease-ttl", 15*time.Second, "run lease TTL")
@@ -186,7 +197,8 @@ func cmdServe(args []string) error {
 	fs.Parse(args)
 
 	s, err := server.New(server.Config{
-		DataDir: *data, Addr: *addr, Model: *modelSpec, Workers: *workers, LeaseTTL: *leaseTTL, Insecure: *insecure,
+		DataDir: *data, Addr: *addr, ServeAddr: *serveAddr, PublicURL: *publicURL,
+		Model: *modelSpec, Workers: *workers, LeaseTTL: *leaseTTL, Insecure: *insecure,
 	})
 	if err != nil {
 		return err
@@ -285,6 +297,101 @@ func cmdSay(args []string) error {
 		status = "deduped (already submitted)"
 	}
 	fmt.Printf("run %s  %s\n", out.RunID, status)
+	return nil
+}
+
+// cmdProjectAction handles publish and rollback (both POST, both return a URL).
+func cmdProjectAction(args []string, action string) error {
+	fs := flag.NewFlagSet(action, flag.ExitOnError)
+	srv := serverFlag(fs)
+	tok := tokenFlag(fs)
+	var version *string
+	if action == "publish" {
+		version = fs.String("version", "", "version id (default: latest)")
+	}
+	if len(args) < 1 {
+		return fmt.Errorf("usage: creo %s PROJECT_ID", action)
+	}
+	projectID := args[0]
+	fs.Parse(args[1:])
+	var body any
+	if action == "publish" && *version != "" {
+		body = map[string]string{"versionId": *version}
+	}
+	var out struct {
+		URL       string `json:"url"`
+		VersionID string `json:"versionId"`
+	}
+	if err := call(http.MethodPost, *srv+"/v1/projects/"+projectID+"/"+action, body, authHeaders(*tok, nil), &out); err != nil {
+		return err
+	}
+	fmt.Printf("%s\n", out.URL)
+	return nil
+}
+
+func cmdPreview(args []string) error {
+	fs := flag.NewFlagSet("preview", flag.ExitOnError)
+	srv := serverFlag(fs)
+	tok := tokenFlag(fs)
+	version := fs.String("version", "", "version id (default: latest)")
+	if len(args) < 1 {
+		return fmt.Errorf("usage: creo preview PROJECT_ID")
+	}
+	projectID := args[0]
+	fs.Parse(args[1:])
+	path := "/v1/projects/" + projectID + "/preview"
+	if *version != "" {
+		path += "?version=" + *version
+	}
+	var out struct {
+		URL string `json:"url"`
+	}
+	if err := call(http.MethodGet, *srv+path, nil, authHeaders(*tok, nil), &out); err != nil {
+		return err
+	}
+	fmt.Println(out.URL)
+	return nil
+}
+
+func cmdExport(args []string) error {
+	fs := flag.NewFlagSet("export", flag.ExitOnError)
+	srv := serverFlag(fs)
+	tok := tokenFlag(fs)
+	version := fs.String("version", "", "version id (default: latest)")
+	out := fs.String("o", "export.zip", "output file")
+	if len(args) < 1 {
+		return fmt.Errorf("usage: creo export PROJECT_ID [-o out.zip]")
+	}
+	projectID := args[0]
+	fs.Parse(args[1:])
+	path := "/v1/projects/" + projectID + "/export"
+	if *version != "" {
+		path += "?version=" + *version
+	}
+	req, err := http.NewRequest(http.MethodGet, *srv+path, nil)
+	if err != nil {
+		return err
+	}
+	if *tok != "" {
+		req.Header.Set("Authorization", "Bearer "+*tok)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("export failed: %s", resp.Status)
+	}
+	f, err := os.Create(*out)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if _, err := io.Copy(f, resp.Body); err != nil {
+		return err
+	}
+	fmt.Printf("wrote %s\n", *out)
 	return nil
 }
 

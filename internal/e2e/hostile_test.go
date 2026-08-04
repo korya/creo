@@ -22,7 +22,7 @@ func newAuthEnv(t *testing.T, model string) *authEnv {
 func (e *authEnv) start() {
 	e.t.Helper()
 	cmd := exec.Command(binPath, "serve",
-		"--addr", e.addr, "--data", e.dataDir, "--model", e.model, "--lease-ttl", "2s")
+		"--addr", e.addr, "--serve-addr", e.serveAddr, "--data", e.dataDir, "--model", e.model, "--lease-ttl", "2s")
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {

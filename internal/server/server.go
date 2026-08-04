@@ -21,28 +21,33 @@ import (
 	"github.com/korya/creo/internal/harness"
 	"github.com/korya/creo/internal/model"
 	"github.com/korya/creo/internal/project"
+	"github.com/korya/creo/internal/publish"
 	"github.com/korya/creo/internal/run"
+	"github.com/korya/creo/internal/serving"
 	"github.com/korya/creo/internal/store"
 	"github.com/korya/creo/internal/tenant"
 	"github.com/korya/creo/internal/workspace"
 )
 
 type Config struct {
-	DataDir  string
-	Addr     string        // default :8080
-	Model    string        // "anthropic:<model-id>" or "fake:<script>"
-	Workers  int           // default 2
-	LeaseTTL time.Duration // default 15s
-	Insecure bool          // map unauthenticated requests to t_default; loopback only
+	DataDir   string
+	Addr      string        // API, default 127.0.0.1:8080
+	ServeAddr string        // published/preview sites, default 127.0.0.1:8081
+	PublicURL string        // base URL of ServeAddr as seen by clients
+	Model     string        // "anthropic:<model-id>" or "fake:<script>"
+	Workers   int           // default 2
+	LeaseTTL  time.Duration // default 15s
+	Insecure  bool          // map unauthenticated requests to t_default; loopback only
 }
 
 type Server struct {
-	cfg   Config
-	db    *store.DB
-	log   *eventlog.Log
-	coord *run.Coordinator
-	h     *harness.Harness
-	http  *http.Server
+	cfg     Config
+	db      *store.DB
+	log     *eventlog.Log
+	coord   *run.Coordinator
+	h       *harness.Harness
+	http    *http.Server
+	serving *http.Server // origin-isolated site serving on ServeAddr
 }
 
 func New(cfg Config) (*Server, error) {
@@ -58,6 +63,13 @@ func New(cfg Config) (*Server, error) {
 	if cfg.Model == "" {
 		cfg.Model = "anthropic:claude-sonnet-5"
 	}
+	if cfg.ServeAddr == "" {
+		cfg.ServeAddr = "127.0.0.1:8081"
+	}
+	if cfg.PublicURL == "" {
+		cfg.PublicURL = "http://" + cfg.ServeAddr
+	}
+	cfg.PublicURL = strings.TrimSuffix(cfg.PublicURL, "/")
 	if cfg.Insecure && !isLoopback(cfg.Addr) {
 		return nil, fmt.Errorf("--insecure refuses to bind non-loopback address %q", cfg.Addr)
 	}
@@ -113,9 +125,14 @@ func New(cfg Config) (*Server, error) {
 			Profile:    harness.DefaultProfile(),
 		},
 	}
+	pub := publish.New(db)
 	s.http = &http.Server{
 		Addr:    cfg.Addr,
-		Handler: api.New(db, elog, coord, ps, tenants, insecureTenant).Routes(),
+		Handler: api.New(db, elog, coord, ps, tenants, pub, cfg.PublicURL, insecureTenant).Routes(),
+	}
+	s.serving = &http.Server{
+		Addr:    cfg.ServeAddr,
+		Handler: serving.New(ps, pub).Routes(),
 	}
 	return s, nil
 }
@@ -175,10 +192,16 @@ func (s *Server) Run(ctx context.Context) error {
 		go s.worker(ctx, fmt.Sprintf("worker-%d-%s", i, ulid.Make().String()))
 	}
 
-	errCh := make(chan error, 1)
+	errCh := make(chan error, 2)
 	go func() {
-		slog.Info("creo serving", "addr", s.cfg.Addr, "model", s.cfg.Model, "data", s.cfg.DataDir)
+		slog.Info("creo API", "addr", s.cfg.Addr, "model", s.cfg.Model, "data", s.cfg.DataDir)
 		if err := s.http.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+			errCh <- err
+		}
+	}()
+	go func() {
+		slog.Info("creo serving sites", "addr", s.cfg.ServeAddr, "public", s.cfg.PublicURL)
+		if err := s.serving.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 		}
 	}()
@@ -187,6 +210,7 @@ func (s *Server) Run(ctx context.Context) error {
 		shutdownCtx, stop := context.WithTimeout(context.Background(), 3*time.Second)
 		defer stop()
 		s.http.Shutdown(shutdownCtx)
+		s.serving.Shutdown(shutdownCtx)
 		return s.db.Close()
 	case err := <-errCh:
 		return err

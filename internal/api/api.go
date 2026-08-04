@@ -5,11 +5,13 @@
 package api
 
 import (
+	"archive/zip"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -20,6 +22,7 @@ import (
 	"github.com/korya/creo/internal/eventlog"
 	"github.com/korya/creo/internal/harness"
 	"github.com/korya/creo/internal/project"
+	"github.com/korya/creo/internal/publish"
 	"github.com/korya/creo/internal/run"
 	"github.com/korya/creo/internal/store"
 	"github.com/korya/creo/internal/tenant"
@@ -32,19 +35,21 @@ const tenantKey ctxKey = 0
 func tenantID(r *http.Request) string { return r.Context().Value(tenantKey).(string) }
 
 type API struct {
-	db       *store.DB
-	log      *eventlog.Log
-	coord    *run.Coordinator
-	projects *project.Store
-	tenants  *tenant.Store
+	db        *store.DB
+	log       *eventlog.Log
+	coord     *run.Coordinator
+	projects  *project.Store
+	tenants   *tenant.Store
+	publish   *publish.Store
+	publicURL string // base URL of the serving port, e.g. http://127.0.0.1:8081
 
 	// insecureTenant, when non-empty, maps unauthenticated requests to that
 	// tenant. Set only by `serve --insecure` (loopback-only, dev mode).
 	insecureTenant string
 }
 
-func New(db *store.DB, log *eventlog.Log, coord *run.Coordinator, projects *project.Store, tenants *tenant.Store, insecureTenant string) *API {
-	return &API{db: db, log: log, coord: coord, projects: projects, tenants: tenants, insecureTenant: insecureTenant}
+func New(db *store.DB, log *eventlog.Log, coord *run.Coordinator, projects *project.Store, tenants *tenant.Store, pub *publish.Store, publicURL, insecureTenant string) *API {
+	return &API{db: db, log: log, coord: coord, projects: projects, tenants: tenants, publish: pub, publicURL: publicURL, insecureTenant: insecureTenant}
 }
 
 func (a *API) Routes() http.Handler {
@@ -53,10 +58,143 @@ func (a *API) Routes() http.Handler {
 	mux.Handle("POST /v1/projects", a.auth(a.createProject))
 	mux.Handle("GET /v1/projects", a.auth(a.listProjects))
 	mux.Handle("GET /v1/projects/{id}/versions", a.auth(a.listVersions))
+	mux.Handle("POST /v1/projects/{id}/publish", a.auth(a.publishProject))
+	mux.Handle("POST /v1/projects/{id}/rollback", a.auth(a.rollbackProject))
+	mux.Handle("GET /v1/projects/{id}/preview", a.auth(a.previewURL))
+	mux.Handle("GET /v1/projects/{id}/export", a.auth(a.exportProject))
 	mux.Handle("POST /v1/sessions/{id}/messages", a.auth(a.postMessage))
 	mux.Handle("GET /v1/sessions/{id}/events", a.auth(a.streamEvents))
 	mux.Handle("GET /v1/runs/{id}", a.auth(a.getRun))
 	return mux
+}
+
+// sessionOfProject returns a project's (single, M0/M1) session, for attaching
+// publish lifecycle events to the log.
+func (a *API) sessionOfProject(ctx context.Context, projectID string) (string, error) {
+	var sessionID string
+	err := a.db.R.QueryRowContext(ctx, `SELECT id FROM sessions WHERE project_id = ? ORDER BY created_at LIMIT 1`, projectID).Scan(&sessionID)
+	return sessionID, err
+}
+
+func (a *API) resolveVersion(ctx context.Context, projectID, requested string) (string, error) {
+	if requested != "" {
+		return requested, nil
+	}
+	return a.projects.Latest(ctx, projectID)
+}
+
+func (a *API) publishProject(w http.ResponseWriter, r *http.Request) {
+	projectID := r.PathValue("id")
+	if err := a.ownsProject(r.Context(), tenantID(r), projectID); err != nil {
+		httpError(w, http.StatusNotFound, "unknown project")
+		return
+	}
+	var body struct {
+		VersionID string `json:"versionId"`
+	}
+	json.NewDecoder(r.Body).Decode(&body)
+	versionID, err := a.resolveVersion(r.Context(), projectID, body.VersionID)
+	if err != nil || versionID == "" {
+		httpError(w, http.StatusBadRequest, "no version to publish")
+		return
+	}
+	live, err := a.publish.Publish(r.Context(), projectID, versionID)
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	url := a.publicURL + "/sites/" + live.Slug + "/"
+	a.appendProjectEvent(r.Context(), projectID, "publish.completed",
+		"Your site is live.", map[string]string{"versionId": versionID, "url": url})
+	writeJSON(w, http.StatusOK, map[string]string{"url": url, "versionId": versionID})
+}
+
+func (a *API) rollbackProject(w http.ResponseWriter, r *http.Request) {
+	projectID := r.PathValue("id")
+	if err := a.ownsProject(r.Context(), tenantID(r), projectID); err != nil {
+		httpError(w, http.StatusNotFound, "unknown project")
+		return
+	}
+	live, err := a.publish.Rollback(r.Context(), projectID)
+	if errors.Is(err, publish.ErrNoParent) || errors.Is(err, publish.ErrNotPublished) {
+		httpError(w, http.StatusConflict, "nothing to roll back to")
+		return
+	} else if err != nil {
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	url := a.publicURL + "/sites/" + live.Slug + "/"
+	a.appendProjectEvent(r.Context(), projectID, "publish.rolled_back",
+		"Your site was rolled back to the previous version.", map[string]string{"versionId": live.VersionID, "url": url})
+	writeJSON(w, http.StatusOK, map[string]string{"url": url, "versionId": live.VersionID})
+}
+
+func (a *API) previewURL(w http.ResponseWriter, r *http.Request) {
+	projectID := r.PathValue("id")
+	if err := a.ownsProject(r.Context(), tenantID(r), projectID); err != nil {
+		httpError(w, http.StatusNotFound, "unknown project")
+		return
+	}
+	versionID, err := a.resolveVersion(r.Context(), projectID, r.URL.Query().Get("version"))
+	if err != nil || versionID == "" {
+		httpError(w, http.StatusBadRequest, "no version to preview")
+		return
+	}
+	secret, err := a.publish.EnsurePreviewSecret(r.Context(), projectID)
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{
+		"url":       a.publicURL + "/preview/" + projectID + "/" + secret + "/" + versionID + "/",
+		"versionId": versionID,
+	})
+}
+
+func (a *API) exportProject(w http.ResponseWriter, r *http.Request) {
+	projectID := r.PathValue("id")
+	if err := a.ownsProject(r.Context(), tenantID(r), projectID); err != nil {
+		httpError(w, http.StatusNotFound, "unknown project")
+		return
+	}
+	versionID, err := a.resolveVersion(r.Context(), projectID, r.URL.Query().Get("version"))
+	if err != nil || versionID == "" {
+		httpError(w, http.StatusBadRequest, "no version to export")
+		return
+	}
+	files, err := a.projects.VersionFiles(r.Context(), projectID, versionID)
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", projectID+".zip"))
+	zw := zip.NewWriter(w)
+	defer zw.Close()
+	for _, f := range files {
+		blob, err := a.projects.Open(f.BlobSHA)
+		if err != nil {
+			return
+		}
+		fw, err := zw.Create(f.Path)
+		if err != nil {
+			blob.Close()
+			return
+		}
+		io.Copy(fw, blob)
+		blob.Close()
+	}
+}
+
+func (a *API) appendProjectEvent(ctx context.Context, projectID, typ, userText string, detail any) {
+	sessionID, err := a.sessionOfProject(ctx, projectID)
+	if err != nil {
+		return
+	}
+	evs, err := a.log.Append(ctx, sessionID, []eventlog.NewEvent{{Type: typ, UserText: userText, Detail: detail}}, nil)
+	if err == nil {
+		a.log.Publish(sessionID, evs)
+	}
 }
 
 // auth resolves the bearer token to a tenant and stores it in the context.

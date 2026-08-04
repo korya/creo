@@ -83,10 +83,15 @@ func FakeScript(name string) (*Fake, error) {
 	}
 	switch name {
 	case "site":
+		// Steps 0-2 are the first run (ends at the text-only step 2). A second
+		// message continues at step 3, writing a new file — so a follow-up run
+		// produces a genuinely different version rather than deduping.
 		return &Fake{ScriptName: name, Steps: []FakeStep{
 			{Text: "Creating your home page.", Tools: []FakeToolCall{page("index.html", "<h1>Home</h1>")}},
 			{Text: "Adding styling.", Tools: []FakeToolCall{page("style.css", "body{font-family:serif}")}},
 			{Text: "Your site is ready: a home page with simple styling."},
+			{Text: "Adding another page.", Tools: []FakeToolCall{page("page2.html", "<h1>Page 2</h1>")}},
+			{Text: "Added a second page."},
 		}}, nil
 	case "slow-site":
 		steps := make([]FakeStep, 0, 9)

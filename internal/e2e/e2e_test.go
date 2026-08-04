@@ -35,14 +35,15 @@ func TestMain(m *testing.M) {
 }
 
 type env struct {
-	t       *testing.T
-	dataDir string
-	addr    string
-	model   string
-	cmd     *exec.Cmd
+	t         *testing.T
+	dataDir   string
+	addr      string
+	serveAddr string
+	model     string
+	cmd       *exec.Cmd
 }
 
-func newEnv(t *testing.T, model string) *env {
+func freePort(t *testing.T) string {
 	t.Helper()
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -50,8 +51,15 @@ func newEnv(t *testing.T, model string) *env {
 	}
 	addr := l.Addr().String()
 	l.Close()
-	return &env{t: t, dataDir: t.TempDir(), addr: addr, model: model}
+	return addr
 }
+
+func newEnv(t *testing.T, model string) *env {
+	t.Helper()
+	return &env{t: t, dataDir: t.TempDir(), addr: freePort(t), serveAddr: freePort(t), model: model}
+}
+
+func (e *env) serveURL(path string) string { return "http://" + e.serveAddr + path }
 
 func (e *env) start() {
 	e.t.Helper()
@@ -59,7 +67,7 @@ func (e *env) start() {
 	// requests map to t_default). Auth and cross-tenant isolation get their
 	// own coverage in hostile_test.go.
 	cmd := exec.Command(binPath, "serve",
-		"--addr", e.addr, "--data", e.dataDir, "--model", e.model, "--lease-ttl", "2s", "--insecure")
+		"--addr", e.addr, "--serve-addr", e.serveAddr, "--data", e.dataDir, "--model", e.model, "--lease-ttl", "2s", "--insecure")
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
