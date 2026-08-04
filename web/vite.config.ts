@@ -1,4 +1,7 @@
-import { defineConfig } from "vite";
+// Vite+ (`vp`) is the single frontend toolchain: dev, build, test, lint, fmt,
+// and type-check all read this one config. `defineConfig` must come from
+// vite-plus — vite's own overload doesn't know the `test`/`lint` keys.
+import { defineConfig } from "vite-plus";
 
 export default defineConfig({
   // Emit straight into the Go embed location — single source of truth, no copy
@@ -13,4 +16,9 @@ export default defineConfig({
     },
   },
   test: { environment: "jsdom", globals: true },
+  // `vp build` does NOT type-check on its own — without this, a type error
+  // ships silently. typeAware turns on the tsgolint-backed rules; typeCheck
+  // promotes compiler diagnostics (TS2322 &c.) to hard errors in `vp check`,
+  // which `npm run build` runs first. Removing either re-opens that hole.
+  lint: { options: { typeAware: true, typeCheck: true } },
 });

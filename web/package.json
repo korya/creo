@@ -1,18 +1,20 @@
 {
   "name": "creo-web",
-  "private": true,
   "version": "0.0.0",
+  "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc && vite build",
-    "test": "vitest run",
-    "preview": "vite preview"
+    "dev": "vp dev",
+    "build": "vp check && vp build",
+    "test": "vp test",
+    "check": "vp check",
+    "lint": "vp lint",
+    "fmt": "vp fmt",
+    "preview": "vp preview"
   },
   "devDependencies": {
-    "jsdom": "^25.0.1",
-    "typescript": "^5.6.3",
-    "vite": "^6.0.3",
-    "vitest": "^2.1.8"
+    "jsdom": "^30.0.1",
+    "vite-plus": "0.2.7",
+    "vitest": "^4.1.10"
   }
 }

@@ -63,13 +63,34 @@ Run locally: `./creo serve --data ./data --model fake:site` (no API key), or
 - **Credentials never enter workspaces.** LLM keys live in the ModelGateway;
   nothing at L0 touches external credentials. The budget check is at the
   gateway — the one point no model call bypasses.
-- **Web client (`web/`)**: TypeScript, npm (Node 24), Vite, vitest. It is a
-  *thin* consumer of the public `/v1` API only (`src/api.ts` is the sole
+- **Web client (`web/`)**: TypeScript, npm (Node 24), **Vite+ (`vp`)** as the one
+  toolchain — build, test, lint, format, and type-check all read `vite.config.ts`.
+  It is a *thin* consumer of the public `/v1` API only (`src/api.ts` is the sole
   surface). Build order: `cd web && npm run build` outputs to
   `internal/webui/dist` (committed, so `go build` works on a fresh checkout),
   then `go build ./cmd/creo`. Dev: `npm run dev` (proxies to a running server),
   or `creo serve --web-dir web/... ` to serve a disk build without re-embedding.
   Tests: `cd web && npm test` (vitest, jsdom). The Go core never imports it.
+
+  ```sh
+  cd web
+  npm run build   # vp check && vp build  — type-checks, then bundles
+  npm test        # vp test    (vitest + jsdom)
+  npm run check   # vp check   (oxfmt + oxlint + type-aware check)
+  npm run fmt     # vp fmt     (oxfmt; also formats index.html)
+  ```
+
+  Two non-obvious rules, both load-bearing:
+  - **`vp build` does not type-check on its own.** The gate lives in
+    `vite.config.ts` (`lint.options.typeAware + typeCheck`) and in `npm run build`
+    running `vp check` first. Drop either and type errors ship silently.
+  - **`defineConfig` must be imported from `vite-plus`**, not `vite` — vite's
+    overload rejects the `test`/`lint` keys. Lint/format scope themselves from
+    `.gitignore`; without it they walk `node_modules`.
+
+  `vite-plus` is pinned to an exact version (it is pre-1.0). `vite` and
+  `typescript` are intentionally *not* direct deps — they come via `vite-plus`;
+  `vitest` (global test types) and `jsdom` (test environment) must stay.
 - **Commits:** one reviewable commit per component/step; imperative subject
   prefixed with the area (`core:`, `docs:`, `api:`).
 
