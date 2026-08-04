@@ -36,12 +36,12 @@ func crashHelper(dbPath string) {
 	ctx := context.Background()
 	out := bufio.NewWriter(os.Stdout)
 	for i := 0; ; i++ {
-		seq, err := l.Append(ctx, "s1", []NewEvent{{Type: "crash", UserText: strconv.Itoa(i)}}, nil)
+		evs, err := l.Append(ctx, "s1", []NewEvent{{Type: "crash", UserText: strconv.Itoa(i)}}, nil)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
-		fmt.Fprintf(out, "%d\n", seq)
+		fmt.Fprintf(out, "%d\n", evs[0].Seq)
 		out.Flush() // seq is only reported after commit; report = acknowledgement
 	}
 }

@@ -60,13 +60,14 @@ func New(db *store.DB) *Log {
 
 // Append writes events atomically (SL-1) with gapless per-session sequence
 // numbers (SL-2), rejecting stale leases before any write (SL-3). On success
-// the events are published to live subscribers (SL-4).
-func (l *Log) Append(ctx context.Context, sessionID string, evs []NewEvent, lease *Lease) (firstSeq int64, err error) {
+// the created events (with their ids and seqs) are returned and published to
+// live subscribers (SL-4).
+func (l *Log) Append(ctx context.Context, sessionID string, evs []NewEvent, lease *Lease) ([]Event, error) {
 	if len(evs) == 0 {
-		return 0, errors.New("empty append")
+		return nil, errors.New("empty append")
 	}
 	var appended []Event
-	err = l.db.Write(ctx, func(tx *sql.Tx) error {
+	err := l.db.Write(ctx, func(tx *sql.Tx) error {
 		if lease != nil {
 			var gen int64
 			var worker string
@@ -111,14 +112,13 @@ func (l *Log) Append(ctx context.Context, sessionID string, evs []NewEvent, leas
 			}
 			appended = append(appended, e)
 		}
-		firstSeq = base + 1
 		return nil
 	})
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	l.publish(sessionID, appended)
-	return firstSeq, nil
+	return appended, nil
 }
 
 func (l *Log) publish(sessionID string, evs []Event) {
