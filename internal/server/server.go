@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -22,6 +23,7 @@ import (
 	"github.com/korya/creo/internal/project"
 	"github.com/korya/creo/internal/run"
 	"github.com/korya/creo/internal/store"
+	"github.com/korya/creo/internal/tenant"
 	"github.com/korya/creo/internal/workspace"
 )
 
@@ -31,6 +33,7 @@ type Config struct {
 	Model    string        // "anthropic:<model-id>" or "fake:<script>"
 	Workers  int           // default 2
 	LeaseTTL time.Duration // default 15s
+	Insecure bool          // map unauthenticated requests to t_default; loopback only
 }
 
 type Server struct {
@@ -54,6 +57,9 @@ func New(cfg Config) (*Server, error) {
 	}
 	if cfg.Model == "" {
 		cfg.Model = "anthropic:claude-sonnet-5"
+	}
+	if cfg.Insecure && !isLoopback(cfg.Addr) {
+		return nil, fmt.Errorf("--insecure refuses to bind non-loopback address %q", cfg.Addr)
 	}
 	if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {
 		return nil, err
@@ -79,6 +85,21 @@ func New(cfg Config) (*Server, error) {
 		db.Close()
 		return nil, err
 	}
+	tenants := tenant.New(db)
+	// The hard budget stop (R-LLM-5): resolved per run, checked before every
+	// model call inside Metered — the one point no model traffic can bypass.
+	budget := func(ctx context.Context, runID string) error {
+		tid, err := tenants.TenantOfRun(ctx, runID)
+		if err != nil {
+			return err
+		}
+		return tenants.CheckBudget(ctx, tid)
+	}
+	insecureTenant := ""
+	if cfg.Insecure {
+		insecureTenant = "t_default"
+		slog.Warn("INSECURE MODE: unauthenticated requests map to t_default — dev only")
+	}
 	s := &Server{
 		cfg:   cfg,
 		db:    db,
@@ -88,15 +109,27 @@ func New(cfg Config) (*Server, error) {
 			Log:        elog,
 			Projects:   ps,
 			Workspaces: wp,
-			Gateway:    &model.Metered{Inner: gw, DB: db},
+			Gateway:    &model.Metered{Inner: gw, DB: db, Budget: budget},
 			Profile:    harness.DefaultProfile(),
 		},
 	}
 	s.http = &http.Server{
 		Addr:    cfg.Addr,
-		Handler: api.New(db, elog, coord, ps).Routes(),
+		Handler: api.New(db, elog, coord, ps, tenants, insecureTenant).Routes(),
 	}
 	return s, nil
+}
+
+func isLoopback(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func buildGateway(spec string) (model.Gateway, error) {

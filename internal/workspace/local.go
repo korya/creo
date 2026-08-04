@@ -48,7 +48,9 @@ type Workspace struct {
 
 func (w *Workspace) Dir() string { return w.dir }
 
-// resolve confines a model-supplied path to the workspace root.
+// resolve confines a model-supplied path to the workspace root: lexically
+// (traversal, absolute paths) and physically (symlinks planted out-of-band
+// must not lead outside the root).
 func (w *Workspace) resolve(p string) (string, error) {
 	if p == "" || filepath.IsAbs(p) {
 		return "", fmt.Errorf("%w: %q", ErrPathEscape, p)
@@ -58,7 +60,37 @@ func (w *Workspace) resolve(p string) (string, error) {
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return "", fmt.Errorf("%w: %q", ErrPathEscape, p)
 	}
+	if err := w.checkSymlinkContainment(full); err != nil {
+		return "", err
+	}
 	return full, nil
+}
+
+// checkSymlinkContainment resolves the deepest existing ancestor of the path
+// (or the path itself) through symlinks and verifies it stays under the root.
+func (w *Workspace) checkSymlinkContainment(full string) error {
+	rootReal, err := filepath.EvalSymlinks(w.dir)
+	if err != nil {
+		return err
+	}
+	probe := full
+	for {
+		if _, err := os.Lstat(probe); err == nil {
+			real, err := filepath.EvalSymlinks(probe)
+			if err != nil {
+				return err
+			}
+			if real != rootReal && !strings.HasPrefix(real, rootReal+string(filepath.Separator)) {
+				return fmt.Errorf("%w: %q resolves outside the workspace", ErrPathEscape, full)
+			}
+			return nil
+		}
+		parent := filepath.Dir(probe)
+		if parent == probe {
+			return nil
+		}
+		probe = parent
+	}
 }
 
 func (w *Workspace) ListFiles() ([]string, error) {

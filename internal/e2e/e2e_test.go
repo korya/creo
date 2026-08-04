@@ -55,8 +55,11 @@ func newEnv(t *testing.T, model string) *env {
 
 func (e *env) start() {
 	e.t.Helper()
+	// Existing M0 acceptance tests run in --insecure mode (unauthenticated
+	// requests map to t_default). Auth and cross-tenant isolation get their
+	// own coverage in hostile_test.go.
 	cmd := exec.Command(binPath, "serve",
-		"--addr", e.addr, "--data", e.dataDir, "--model", e.model, "--lease-ttl", "2s")
+		"--addr", e.addr, "--data", e.dataDir, "--model", e.model, "--lease-ttl", "2s", "--insecure")
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {

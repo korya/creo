@@ -98,6 +98,27 @@ func FakeScript(name string) (*Fake, error) {
 		}
 		steps = append(steps, FakeStep{Text: "Your site is ready with all eight pages."})
 		return &Fake{ScriptName: name, Steps: steps, StepDelay: 150 * time.Millisecond}, nil
+	case "hostile":
+		// A prompt-injected agent: every step tries to escape the workspace.
+		// The platform must turn each into a tool error and nothing else.
+		esc := func(name, path string) FakeToolCall {
+			in := map[string]any{"path": path}
+			if name == "write_file" {
+				in["content"] = "pwned"
+			}
+			return FakeToolCall{Name: name, Input: in}
+		}
+		return &Fake{ScriptName: name, Steps: []FakeStep{
+			{Text: "Building your site.", Tools: []FakeToolCall{
+				{Name: "write_file", Input: map[string]any{"path": "index.html", "content": "<h1>ok</h1>"}},
+			}},
+			{Text: "Reading a sibling project.", Tools: []FakeToolCall{esc("read_file", "../victim/index.html")}},
+			{Text: "Reading host secrets.", Tools: []FakeToolCall{esc("read_file", "/etc/passwd")}},
+			{Text: "Reading the env file.", Tools: []FakeToolCall{esc("read_file", "../../../../.env")}},
+			{Text: "Writing outside.", Tools: []FakeToolCall{esc("write_file", "../evil.txt")}},
+			{Text: "Deleting outside.", Tools: []FakeToolCall{esc("delete_file", "../victim/index.html")}},
+			{Text: "All done."},
+		}}, nil
 	default:
 		return nil, fmt.Errorf("unknown fake script %q", name)
 	}

@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -19,6 +20,8 @@ import (
 	"github.com/oklog/ulid/v2"
 
 	"github.com/korya/creo/internal/server"
+	"github.com/korya/creo/internal/store"
+	"github.com/korya/creo/internal/tenant"
 )
 
 func main() {
@@ -36,6 +39,10 @@ func main() {
 		err = cmdSay(os.Args[2:])
 	case "watch":
 		err = cmdWatch(os.Args[2:])
+	case "tenant":
+		err = cmdTenant(os.Args[2:])
+	case "token":
+		err = cmdToken(os.Args[2:])
 	default:
 		usage()
 		os.Exit(2)
@@ -47,13 +54,125 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprint(os.Stderr, `creo — self-hosted app building platform (M0 spine)
+	fmt.Fprint(os.Stderr, `creo — self-hosted app building platform
 
-  creo serve   [--addr 127.0.0.1:8080] [--data ./data] [--model anthropic:claude-sonnet-5|fake:site]
-  creo project new NAME | ls        [--server URL]
-  creo say SESSION_ID "message"     [--server URL] [--key IDEMPOTENCY_KEY]
-  creo watch SESSION_ID             [--server URL] [--after N] [--all]
+server:
+  creo serve   [--addr 127.0.0.1:8080] [--data ./data] [--model SPEC] [--insecure]
+
+admin (local, operates on the data directory):
+  creo tenant new NAME [--daily-tokens N] [--max-runs N] [--data ./data]
+  creo tenant ls                        [--data ./data]
+  creo token new TENANT_ID [--name X]   [--data ./data]
+  creo token revoke TOKEN_ID            [--data ./data]
+
+client (HTTP; auth via --token or CREO_TOKEN):
+  creo project new NAME | ls        [--server URL] [--token T]
+  creo say SESSION_ID "message"     [--server URL] [--token T] [--key IDEMPOTENCY_KEY]
+  creo watch SESSION_ID             [--server URL] [--token T] [--after N] [--all]
 `)
+}
+
+func cmdTenant(args []string) error {
+	if len(args) < 1 {
+		return fmt.Errorf("usage: creo tenant new NAME | ls")
+	}
+	sub, rest := args[0], args[1:]
+	fs := flag.NewFlagSet("tenant", flag.ExitOnError)
+	data := fs.String("data", "./data", "data directory")
+	switch sub {
+	case "new":
+		if len(rest) < 1 {
+			return fmt.Errorf("usage: creo tenant new NAME")
+		}
+		name := rest[0]
+		daily := fs.Int64("daily-tokens", 0, "daily token budget (0 = unlimited)")
+		maxRuns := fs.Int64("max-runs", 2, "max concurrent runs")
+		fs.Parse(rest[1:])
+		db, err := store.Open(filepath.Join(*data, "creo.db"))
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+		var limit *int64
+		if *daily > 0 {
+			limit = daily
+		}
+		t, err := tenant.New(db).Create(context.Background(), name, limit, *maxRuns)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("tenant %s  (%s)\n", t.ID, t.Name)
+		return nil
+	case "ls":
+		fs.Parse(rest)
+		db, err := store.Open(filepath.Join(*data, "creo.db"))
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+		tenants, err := tenant.New(db).List(context.Background())
+		if err != nil {
+			return err
+		}
+		for _, t := range tenants {
+			limit := "unlimited"
+			if t.DailyTokenLimit != nil {
+				limit = fmt.Sprintf("%d/day", *t.DailyTokenLimit)
+			}
+			fmt.Printf("%s  %-16s  budget=%-12s  max-runs=%d\n", t.ID, t.Name, limit, t.MaxConcurrentRuns)
+		}
+		return nil
+	default:
+		return fmt.Errorf("unknown subcommand %q", sub)
+	}
+}
+
+func cmdToken(args []string) error {
+	if len(args) < 1 {
+		return fmt.Errorf("usage: creo token new TENANT_ID | revoke TOKEN_ID")
+	}
+	sub, rest := args[0], args[1:]
+	fs := flag.NewFlagSet("token", flag.ExitOnError)
+	data := fs.String("data", "./data", "data directory")
+	switch sub {
+	case "new":
+		if len(rest) < 1 {
+			return fmt.Errorf("usage: creo token new TENANT_ID")
+		}
+		tenantID := rest[0]
+		name := fs.String("name", "cli", "token name")
+		fs.Parse(rest[1:])
+		db, err := store.Open(filepath.Join(*data, "creo.db"))
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+		plaintext, id, err := tenant.New(db).CreateToken(context.Background(), tenantID, *name)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("token %s\n%s\n", id, plaintext)
+		fmt.Fprintln(os.Stderr, "shown once — store it now (e.g. export CREO_TOKEN=...)")
+		return nil
+	case "revoke":
+		if len(rest) < 1 {
+			return fmt.Errorf("usage: creo token revoke TOKEN_ID")
+		}
+		tokenID := rest[0]
+		fs.Parse(rest[1:])
+		db, err := store.Open(filepath.Join(*data, "creo.db"))
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+		if err := tenant.New(db).RevokeToken(context.Background(), tokenID); err != nil {
+			return err
+		}
+		fmt.Println("revoked", tokenID)
+		return nil
+	default:
+		return fmt.Errorf("unknown subcommand %q", sub)
+	}
 }
 
 func cmdServe(args []string) error {
@@ -63,10 +182,11 @@ func cmdServe(args []string) error {
 	modelSpec := fs.String("model", "anthropic:claude-sonnet-5", "model spec: anthropic:<id> or fake:<script>")
 	workers := fs.Int("workers", 2, "concurrent runs")
 	leaseTTL := fs.Duration("lease-ttl", 15*time.Second, "run lease TTL")
+	insecure := fs.Bool("insecure", false, "map unauthenticated requests to t_default (loopback only, dev mode)")
 	fs.Parse(args)
 
 	s, err := server.New(server.Config{
-		DataDir: *data, Addr: *addr, Model: *modelSpec, Workers: *workers, LeaseTTL: *leaseTTL,
+		DataDir: *data, Addr: *addr, Model: *modelSpec, Workers: *workers, LeaseTTL: *leaseTTL, Insecure: *insecure,
 	})
 	if err != nil {
 		return err
@@ -80,6 +200,21 @@ func serverFlag(fs *flag.FlagSet) *string {
 	return fs.String("server", envOr("CREO_SERVER", "http://127.0.0.1:8080"), "server URL")
 }
 
+func tokenFlag(fs *flag.FlagSet) *string {
+	return fs.String("token", os.Getenv("CREO_TOKEN"), "bearer token (default: CREO_TOKEN env)")
+}
+
+func authHeaders(token string, extra map[string]string) map[string]string {
+	h := map[string]string{}
+	if token != "" {
+		h["Authorization"] = "Bearer " + token
+	}
+	for k, v := range extra {
+		h[k] = v
+	}
+	return h
+}
+
 func cmdProject(args []string) error {
 	if len(args) < 1 {
 		return fmt.Errorf("usage: creo project new NAME | ls")
@@ -87,6 +222,7 @@ func cmdProject(args []string) error {
 	sub, rest := args[0], args[1:]
 	fs := flag.NewFlagSet("project", flag.ExitOnError)
 	srv := serverFlag(fs)
+	tok := tokenFlag(fs)
 	switch sub {
 	case "new":
 		if len(rest) < 1 {
@@ -99,7 +235,7 @@ func cmdProject(args []string) error {
 			Name      string `json:"name"`
 			SessionID string `json:"sessionId"`
 		}
-		if err := call(http.MethodPost, *srv+"/v1/projects", map[string]string{"name": name}, nil, &out); err != nil {
+		if err := call(http.MethodPost, *srv+"/v1/projects", map[string]string{"name": name}, authHeaders(*tok, nil), &out); err != nil {
 			return err
 		}
 		fmt.Printf("project  %s  (%s)\nsession  %s\n", out.ID, out.Name, out.SessionID)
@@ -111,7 +247,7 @@ func cmdProject(args []string) error {
 			Name      string `json:"name"`
 			SessionID string `json:"sessionId"`
 		}
-		if err := call(http.MethodGet, *srv+"/v1/projects", nil, nil, &out); err != nil {
+		if err := call(http.MethodGet, *srv+"/v1/projects", nil, authHeaders(*tok, nil), &out); err != nil {
 			return err
 		}
 		for _, p := range out {
@@ -126,6 +262,7 @@ func cmdProject(args []string) error {
 func cmdSay(args []string) error {
 	fs := flag.NewFlagSet("say", flag.ExitOnError)
 	srv := serverFlag(fs)
+	tok := tokenFlag(fs)
 	key := fs.String("key", "", "idempotency key (default: generated)")
 	if len(args) < 2 {
 		return fmt.Errorf("usage: creo say SESSION_ID \"message\"")
@@ -139,7 +276,7 @@ func cmdSay(args []string) error {
 		RunID   string `json:"runId"`
 		Deduped bool   `json:"deduped"`
 	}
-	headers := map[string]string{"Idempotency-Key": *key}
+	headers := authHeaders(*tok, map[string]string{"Idempotency-Key": *key})
 	if err := call(http.MethodPost, *srv+"/v1/sessions/"+sessionID+"/messages", map[string]string{"text": text}, headers, &out); err != nil {
 		return err
 	}
@@ -154,6 +291,7 @@ func cmdSay(args []string) error {
 func cmdWatch(args []string) error {
 	fs := flag.NewFlagSet("watch", flag.ExitOnError)
 	srv := serverFlag(fs)
+	tok := tokenFlag(fs)
 	after := fs.Int64("after", 0, "start after sequence number")
 	all := fs.Bool("all", false, "show every event type, not just user-facing ones")
 	if len(args) < 1 {
@@ -162,7 +300,14 @@ func cmdWatch(args []string) error {
 	sessionID := args[0]
 	fs.Parse(args[1:])
 
-	resp, err := http.Get(*srv + "/v1/sessions/" + sessionID + "/events?after=" + fmt.Sprint(*after))
+	req, err := http.NewRequest(http.MethodGet, *srv+"/v1/sessions/"+sessionID+"/events?after="+fmt.Sprint(*after), nil)
+	if err != nil {
+		return err
+	}
+	if *tok != "" {
+		req.Header.Set("Authorization", "Bearer "+*tok)
+	}
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return err
 	}

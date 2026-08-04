@@ -2,6 +2,7 @@ package workspace
 
 import (
 	"errors"
+	"os"
 	"testing"
 )
 
@@ -34,6 +35,34 @@ func TestPathConfinement(t *testing.T) {
 		if err := ws.DeleteFile(p); !errors.Is(err, ErrPathEscape) {
 			t.Errorf("DeleteFile(%q): want ErrPathEscape, got %v", p, err)
 		}
+	}
+}
+
+// A symlink planted inside the workspace (out-of-band) pointing outside must
+// not be readable or writable through.
+func TestSymlinkContainment(t *testing.T) {
+	root := t.TempDir()
+	wp, _ := NewProvider(root)
+	ws, _ := wp.Open("p1")
+
+	outside := t.TempDir()
+	if err := os.WriteFile(outside+"/secret.txt", []byte("secret"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, ws.Dir()+"/evil"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ws.ReadFile("evil/secret.txt"); !errors.Is(err, ErrPathEscape) {
+		t.Fatalf("read through symlink: want ErrPathEscape, got %v", err)
+	}
+	if err := ws.WriteFile("evil/dropped.txt", []byte("x")); !errors.Is(err, ErrPathEscape) {
+		t.Fatalf("write through symlink: want ErrPathEscape, got %v", err)
+	}
+	if err := ws.DeleteFile("evil/secret.txt"); !errors.Is(err, ErrPathEscape) {
+		t.Fatalf("delete through symlink: want ErrPathEscape, got %v", err)
+	}
+	if _, err := os.Stat(outside + "/secret.txt"); err != nil {
+		t.Fatalf("outside file harmed: %v", err)
 	}
 }
 

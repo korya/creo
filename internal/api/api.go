@@ -1,6 +1,7 @@
-// Package api is the API layer: a thin, idempotency-keyed translation onto
-// the components, plus the SSE event stream. Everything a client can do goes
-// through here — the CLI and any future web client share this exact surface.
+// Package api is the API layer: authentication, tenant scoping, idempotent
+// commands, and the SSE event stream — a thin translation onto the components.
+// Every route except /healthz requires a bearer token; a resource outside the
+// caller's tenant is indistinguishable from a missing one (404, never 403).
 package api
 
 import (
@@ -11,6 +12,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/oklog/ulid/v2"
@@ -20,29 +22,81 @@ import (
 	"github.com/korya/creo/internal/project"
 	"github.com/korya/creo/internal/run"
 	"github.com/korya/creo/internal/store"
+	"github.com/korya/creo/internal/tenant"
 )
+
+type ctxKey int
+
+const tenantKey ctxKey = 0
+
+func tenantID(r *http.Request) string { return r.Context().Value(tenantKey).(string) }
 
 type API struct {
 	db       *store.DB
 	log      *eventlog.Log
 	coord    *run.Coordinator
 	projects *project.Store
+	tenants  *tenant.Store
+
+	// insecureTenant, when non-empty, maps unauthenticated requests to that
+	// tenant. Set only by `serve --insecure` (loopback-only, dev mode).
+	insecureTenant string
 }
 
-func New(db *store.DB, log *eventlog.Log, coord *run.Coordinator, projects *project.Store) *API {
-	return &API{db: db, log: log, coord: coord, projects: projects}
+func New(db *store.DB, log *eventlog.Log, coord *run.Coordinator, projects *project.Store, tenants *tenant.Store, insecureTenant string) *API {
+	return &API{db: db, log: log, coord: coord, projects: projects, tenants: tenants, insecureTenant: insecureTenant}
 }
 
 func (a *API) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { fmt.Fprintln(w, "ok") })
-	mux.HandleFunc("POST /v1/projects", a.createProject)
-	mux.HandleFunc("GET /v1/projects", a.listProjects)
-	mux.HandleFunc("GET /v1/projects/{id}/versions", a.listVersions)
-	mux.HandleFunc("POST /v1/sessions/{id}/messages", a.postMessage)
-	mux.HandleFunc("GET /v1/sessions/{id}/events", a.streamEvents)
-	mux.HandleFunc("GET /v1/runs/{id}", a.getRun)
+	mux.Handle("POST /v1/projects", a.auth(a.createProject))
+	mux.Handle("GET /v1/projects", a.auth(a.listProjects))
+	mux.Handle("GET /v1/projects/{id}/versions", a.auth(a.listVersions))
+	mux.Handle("POST /v1/sessions/{id}/messages", a.auth(a.postMessage))
+	mux.Handle("GET /v1/sessions/{id}/events", a.auth(a.streamEvents))
+	mux.Handle("GET /v1/runs/{id}", a.auth(a.getRun))
 	return mux
+}
+
+// auth resolves the bearer token to a tenant and stores it in the context.
+func (a *API) auth(next http.HandlerFunc) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		header := r.Header.Get("Authorization")
+		if header == "" && a.insecureTenant != "" {
+			next(w, r.WithContext(context.WithValue(r.Context(), tenantKey, a.insecureTenant)))
+			return
+		}
+		token, ok := strings.CutPrefix(header, "Bearer ")
+		if !ok || token == "" {
+			httpError(w, http.StatusUnauthorized, "missing bearer token")
+			return
+		}
+		tid, err := a.tenants.Authenticate(r.Context(), token)
+		if errors.Is(err, tenant.ErrUnauthorized) {
+			httpError(w, http.StatusUnauthorized, "invalid or revoked token")
+			return
+		} else if err != nil {
+			httpError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		next(w, r.WithContext(context.WithValue(r.Context(), tenantKey, tid)))
+	})
+}
+
+// ownsProject / ownsSession return sql.ErrNoRows for both "does not exist"
+// and "belongs to someone else" — callers turn either into a 404.
+func (a *API) ownsProject(ctx context.Context, tid, projectID string) error {
+	var one int
+	return a.db.R.QueryRowContext(ctx,
+		`SELECT 1 FROM projects WHERE id = ? AND tenant_id = ?`, projectID, tid).Scan(&one)
+}
+
+func (a *API) sessionProject(ctx context.Context, tid, sessionID string) (string, error) {
+	var projectID string
+	err := a.db.R.QueryRowContext(ctx,
+		`SELECT project_id FROM sessions WHERE id = ? AND tenant_id = ?`, sessionID, tid).Scan(&projectID)
+	return projectID, err
 }
 
 type Project struct {
@@ -52,6 +106,7 @@ type Project struct {
 }
 
 func (a *API) createProject(w http.ResponseWriter, r *http.Request) {
+	tid := tenantID(r)
 	var body struct {
 		Name string `json:"name"`
 	}
@@ -62,10 +117,10 @@ func (a *API) createProject(w http.ResponseWriter, r *http.Request) {
 	p := Project{ID: "p_" + ulid.Make().String(), Name: body.Name, SessionID: "s_" + ulid.Make().String()}
 	err := a.db.Write(r.Context(), func(tx *sql.Tx) error {
 		now := time.Now().UTC().Format(time.RFC3339Nano)
-		if _, err := tx.Exec(`INSERT INTO projects (id, name, created_at) VALUES (?,?,?)`, p.ID, p.Name, now); err != nil {
+		if _, err := tx.Exec(`INSERT INTO projects (id, tenant_id, name, created_at) VALUES (?,?,?,?)`, p.ID, tid, p.Name, now); err != nil {
 			return err
 		}
-		_, err := tx.Exec(`INSERT INTO sessions (id, project_id, created_at) VALUES (?,?,?)`, p.SessionID, p.ID, now)
+		_, err := tx.Exec(`INSERT INTO sessions (id, tenant_id, project_id, created_at) VALUES (?,?,?,?)`, p.SessionID, tid, p.ID, now)
 		return err
 	})
 	if err != nil {
@@ -77,7 +132,8 @@ func (a *API) createProject(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) listProjects(w http.ResponseWriter, r *http.Request) {
 	rows, err := a.db.R.QueryContext(r.Context(), `
-		SELECT p.id, p.name, s.id FROM projects p JOIN sessions s ON s.project_id = p.id ORDER BY p.created_at`)
+		SELECT p.id, p.name, s.id FROM projects p JOIN sessions s ON s.project_id = p.id
+		WHERE p.tenant_id = ? ORDER BY p.created_at`, tenantID(r))
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -100,7 +156,12 @@ func (a *API) listProjects(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) listVersions(w http.ResponseWriter, r *http.Request) {
-	versions, err := a.projects.ListVersions(r.Context(), r.PathValue("id"))
+	projectID := r.PathValue("id")
+	if err := a.ownsProject(r.Context(), tenantID(r), projectID); err != nil {
+		httpError(w, http.StatusNotFound, "unknown project")
+		return
+	}
+	versions, err := a.projects.ListVersions(r.Context(), projectID)
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -108,8 +169,8 @@ func (a *API) listVersions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, versions)
 }
 
-// postMessage appends the user message and requests a run. The Idempotency-Key
-// header is mandatory: replays return the original run, never a second one.
+// postMessage appends the user message and requests a run — atomically, keyed
+// by the mandatory Idempotency-Key header (RC-1 + S6).
 func (a *API) postMessage(w http.ResponseWriter, r *http.Request) {
 	sessionID := r.PathValue("id")
 	idemKey := r.Header.Get("Idempotency-Key")
@@ -124,8 +185,7 @@ func (a *API) postMessage(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "body must be {\"text\": \"...\"}")
 		return
 	}
-	var projectID string
-	err := a.db.R.QueryRowContext(r.Context(), `SELECT project_id FROM sessions WHERE id = ?`, sessionID).Scan(&projectID)
+	projectID, err := a.sessionProject(r.Context(), tenantID(r), sessionID)
 	if errors.Is(err, sql.ErrNoRows) {
 		httpError(w, http.StatusNotFound, "unknown session")
 		return
@@ -133,10 +193,6 @@ func (a *API) postMessage(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-
-	// Dedup check happens in RequestRun; the user.message event is only
-	// appended for fresh keys, so a replay does not duplicate the message.
-	// We do this by asking the coordinator first with a reserved probe.
 	ref, appended, err := a.submit(r.Context(), sessionID, projectID, idemKey, body.Text)
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, err.Error())
@@ -150,8 +206,8 @@ func (a *API) postMessage(w http.ResponseWriter, r *http.Request) {
 }
 
 // submit is atomic: idempotency check, user.message append, and run
-// registration commit in one transaction (S6 — closes the M0 race). Publish
-// and worker wake-up happen after commit.
+// registration commit in one transaction (S6). Publish and worker wake-up
+// happen after commit.
 func (a *API) submit(ctx context.Context, sessionID, projectID, idemKey, text string) (run.RunRef, bool, error) {
 	var ref run.RunRef
 	var appended []eventlog.Event
@@ -192,6 +248,10 @@ func (a *API) getRun(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	if err := a.ownsProject(r.Context(), tenantID(r), got.ProjectID); err != nil {
+		httpError(w, http.StatusNotFound, "unknown run")
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]string{
 		"id": got.ID, "status": got.Status, "outcome": got.Outcome, "sessionId": got.SessionID,
 	})
@@ -201,6 +261,10 @@ func (a *API) getRun(w http.ResponseWriter, r *http.Request) {
 // live tail. ?stream=false returns a plain JSON array instead.
 func (a *API) streamEvents(w http.ResponseWriter, r *http.Request) {
 	sessionID := r.PathValue("id")
+	if _, err := a.sessionProject(r.Context(), tenantID(r), sessionID); err != nil {
+		httpError(w, http.StatusNotFound, "unknown session")
+		return
+	}
 	after, _ := strconv.ParseInt(r.URL.Query().Get("after"), 10, 64)
 
 	if r.URL.Query().Get("stream") == "false" {
