@@ -2,6 +2,8 @@
 node_modules/
 # Local dev server state (SQLite + WAL, content store, workspaces).
 data/
+# `go build ./cmd/creo` drops the binary here.
+/creo
 web/node_modules/
 spikes/01-harness/results/
 spikes/01-harness/work/
