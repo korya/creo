@@ -26,6 +26,32 @@ run model="fake:site":
     if [ -f .env ]; then set -a; source .env; set +a; fi
     go run ./cmd/creo serve --data {{ data }} --model "{{ model }}" --insecure
 
+[doc("Build the web client, then the binary (order matters — Go embeds dist)")]
+build: build-ts build-go
+
+[doc("Build the creo binary into ./creo")]
+build-go:
+    go build ./cmd/creo
+
+[doc("Build the web client into internal/webui/dist (type-checks first)")]
+build-ts:
+    cd web && npm run build
+
+[doc("Run the full test suite (Go + TypeScript)")]
+test: test-go test-ts
+
+[doc("Go tests, including e2e — which builds and spawns the binary itself")]
+test-go:
+    go test ./...
+
+[doc("Go tests without the subprocess/e2e ones — the fast inner loop")]
+test-short:
+    go test ./... -short
+
+[doc("Web client tests (vitest + jsdom)")]
+test-ts:
+    cd web && npm test
+
 [doc("Fix formatting and lint issues everywhere (Go + TypeScript)")]
 check: check-go check-ts
 

@@ -40,9 +40,12 @@ still works.
 ```sh
 just run                     # serve locally on :8080 (fake model, no API key)
 just run anthropic:claude-sonnet-5   # real model; sources .env for the API key
+just build                   # web client, THEN the binary — Go embeds dist
+just test                    # full suite (Go incl. e2e + vitest)
+just test-short              # skips subprocess tests — the fast inner loop
 just check                   # format + lint + tidy, FIXING in place
 just check-ci                # the same checks, verify-only — never writes
-just check-go / just check-ts        # one side only
+just check-go / just check-ts        # one side only (same for build-/test-)
 ```
 
 `check` fixes, `check-ci` reports. The verify-only recipes never write: the
