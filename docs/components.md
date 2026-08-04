@@ -235,7 +235,29 @@ interface ProductProfile {
 
 **Responsibility.** Owns *who is calling*. Tiny in v-min — token mint/verify/revoke plus per-tenant budget and quota queries — but exists from day one so every authorization decision has a subject. Retrofitting identity under a system that assumed "the one user" is a rewrite; carrying `tenant_id` on every row from the start is a column.
 
-**Surface (`internal/tenant`):** `Create`, `CreateToken` (plaintext shown once, SHA-256 at rest), `RevokeToken`, `Authenticate`, `CheckBudget` (daily token limit, UTC-midnight window — the R-LLM-5 hard stop, called from the ModelGateway), `TenantOfRun`. CLI: `creo tenant new|ls`, `creo token new|revoke` (local, operate on the data dir). Auth is mandatory on every `/v1` route; `serve --insecure` (loopback-only) maps to the default tenant for dev. Tokens are the tenant principal in M1; user objects arrive with the human-login surface (M3/M4).
+**Surface (`internal/tenant`):** `Create`, `CreateToken` (plaintext shown once, SHA-256 at rest), `RevokeToken`, `Authenticate`, `CheckBudget` (daily token limit, UTC-midnight window — the R-LLM-5 hard stop, called from the ModelGateway), `TenantOfRun`. CLI: `creo tenant new|ls`, `creo token new|revoke` (local, operate on the data dir). Auth is mandatory on every `/v1` route; `serve --insecure` (loopback-only) maps to the default tenant for dev. Tokens are the tenant principal in M1; user objects arrive with the human-login surface (M4, deferral D1).
+
+### Human login design (decided 2026-08-04, resolves PRD open question #5)
+
+The pluggable part is **login, not tokens**. An `Authenticator` driver answers exactly one question — *which human just proved themselves* — as a discrete authentication event; the IdentityService (ours, fixed, not pluggable) then maps that to a local user row and mints a **Creo-native session/token**, identical in format regardless of driver. No external token ever flows past the login step; the rest of the platform sees exactly one principal artifact.
+
+```ts
+interface Authenticator {                       // pluggable — the ONLY pluggable part
+  beginLogin(input): Challenge                  // e.g. account picker, or OIDC redirect
+  completeLogin(response): VerifiedIdentity     // subject + display info, nothing more
+}
+// fixed pipeline: VerifiedIdentity → local user row → Creo session/token
+```
+
+**Drivers (two, no zoo):**
+- **`static`** — a few manually precreated accounts that trust each other (passwordless account-switch). This is the **permanent T1 answer**, not a stopgap: a family install must never require running an IdP. Production code with a real account-switch UX. Also the e2e-test driver (tests authenticate through the real seam — auth is never mocked around) and the dev driver: `serve --insecure` collapses into a `static` config with one dev account instead of a bespoke code path.
+- **`oidc`** — the one external protocol (OAuth alone is not an identity protocol). Covers hosted IdPs (Google, Microsoft) and everything self-hosters actually run (Keycloak, Authentik, Authelia, Pocket ID, Dex). Mandatory from T2 up. SAML/LDAP/SCIM: not until an enterprise operator pays for it (R-SEC-5).
+
+**Rules:**
+- **Local user rows are canonical; the IdP only authenticates.** Events, approvals, and tenant membership reference Creo's user ID; the IdP subject (`iss`+`sub`) is a link stored on the user row. An IdP migration must never orphan attribution history — external identity is an input, never the source of truth (the §3.1 authority ruling, applied to people).
+- **Authz stays entirely Creo-side.** The IdP answers *who*, never *what they may touch*; no group→tenant mapping.
+- **Deployment pairing:** OIDC redirect flows want HTTPS — fine over Tailscale (`ts.net` certs), awkward on plain-HTTP LAN. So: LAN → `static`, tailnet/T2+ → `oidc`. The degraded-transport case and the simple driver are the same case.
+- The T1 honesty caveat stands regardless of driver (PRD §5.3): under `static`, approvals attribute intent but do not authenticate the human.
 
 ## 12. ToolBroker (dormant in v-min)
 
