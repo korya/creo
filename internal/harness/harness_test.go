@@ -120,6 +120,49 @@ func TestFullRun(t *testing.T) {
 	}
 }
 
+// Fix-02: the completion text is emitted exactly once (on run.completed), and
+// the final assistant.message carries no UI text (only Blocks, for context).
+func TestCompletionMessageNotDuplicated(t *testing.T) {
+	fake, _ := model.FakeScript("site")
+	f := setup(t, fake)
+	ctx := context.Background()
+	r := f.claimRun(t, "w1")
+	text, err := f.h.Execute(ctx, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	evs, _ := f.log.Read(ctx, "s1", 0, nil)
+
+	// Exactly one logged event carries the completion text as UserText.
+	var carrying, lastAssistantText int
+	for _, e := range evs {
+		if e.UserText == text {
+			carrying++
+		}
+	}
+	// The last assistant.message before completion has empty UserText.
+	for _, e := range evs {
+		if e.Type == EvAssistant {
+			if e.UserText == "" {
+				lastAssistantText = 0
+			} else {
+				lastAssistantText = 1
+			}
+		}
+	}
+	if carrying != 1 {
+		t.Fatalf("completion text %q appears on %d events, want exactly 1", text, carrying)
+	}
+	if lastAssistantText != 0 {
+		t.Fatal("final assistant.message should carry no UI text (delivered via run.completed)")
+	}
+	// run.completed still carries it (existing contract).
+	rc, _ := f.log.Read(ctx, "s1", 0, []string{EvRunCompleted})
+	if len(rc) != 1 || rc[0].UserText != text {
+		t.Fatalf("run.completed must carry the completion text: %+v", rc)
+	}
+}
+
 // Progress: successful tool results carry a plain-language phrase for the UI,
 // while the run's semantics (reconstruct/model context) are unchanged.
 func TestToolResultsCarryProgress(t *testing.T) {

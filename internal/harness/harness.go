@@ -144,16 +144,25 @@ func (h *Harness) Execute(ctx context.Context, r *run.Run) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("model call: %w", err)
 		}
+		uiText := joinText(comp.Blocks)
+		final := comp.StopReason != model.StopToolUse
+		// On the final turn the completion message is delivered once, via
+		// run.completed. The final assistant.message carries context (Blocks),
+		// not UI text, so the client doesn't render it twice.
+		assistantText := uiText
+		if final {
+			assistantText = ""
+		}
 		if _, err := h.Log.Append(ctx, sessionID, []eventlog.NewEvent{{
 			Type: EvAssistant, RunID: r.ID,
-			UserText: joinText(comp.Blocks),
+			UserText: assistantText,
 			Detail:   assistantDetail{Blocks: comp.Blocks},
 		}}, lease); err != nil {
 			return "", err
 		}
 		msgs = append(msgs, model.Message{Role: model.RoleAssistant, Blocks: comp.Blocks})
-		if comp.StopReason != model.StopToolUse {
-			finalText = joinText(comp.Blocks)
+		if final {
+			finalText = uiText
 			break
 		}
 	}
