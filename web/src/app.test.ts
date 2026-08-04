@@ -55,3 +55,43 @@ describe("build progress rendering", () => {
     expect(document.getElementById("activity")?.textContent).toBe("Getting started…");
   });
 });
+
+describe("user message rendering (Finding 3)", () => {
+  beforeEach(() => {
+    seq = 0;
+    setupDom();
+  });
+
+  const youBubbles = () =>
+    [...document.querySelectorAll(".msg.you")].map((m) => m.textContent);
+
+  it("renders a user message from the stream exactly once", () => {
+    handleEvent(ev("user.message", "build me a bakery site"));
+    expect(youBubbles()).toEqual(["build me a bakery site"]);
+  });
+
+  it("does not double-render (the stream is the only path — no optimistic echo)", () => {
+    // Simulate the live flow: a single user.message event drives the one bubble.
+    handleEvent(ev("user.message", "add a menu page"));
+    handleEvent(ev("run.started"));
+    handleEvent(ev("run.completed", "Done — added your menu page."));
+    expect(youBubbles()).toEqual(["add a menu page"]);
+  });
+
+  it("replays user messages on hydrate, preserving order with Creo's replies", () => {
+    // Hydrate = handleEvent over the full replayed log.
+    handleEvent(ev("user.message", "first request"));
+    handleEvent(ev("assistant.message", "working on it"));
+    handleEvent(ev("run.completed", "first done"));
+    handleEvent(ev("user.message", "second request"));
+    const order = [...document.querySelectorAll(".msg")].map(
+      (m) => m.className.replace("msg ", "") + ":" + m.textContent,
+    );
+    expect(order).toEqual([
+      "you:first request",
+      "creo:working on it",
+      "creo:first done",
+      "you:second request",
+    ]);
+  });
+});

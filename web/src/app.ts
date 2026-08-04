@@ -68,6 +68,12 @@ function handleEvent(e: Event) {
   if (e.seq <= state.lastSeq) return;
   state.lastSeq = e.seq;
   switch (e.type) {
+    case "user.message":
+      // The stream is the single source of truth for the transcript, so the
+      // user's own messages render here — live AND on reload/second-device
+      // resume (the optimistic local echo in send() is intentionally gone).
+      if (e.userText) addMessage("you", e.userText);
+      break;
     case "run.started":
     case "run.resumed":
       setBuilding(true);
@@ -118,7 +124,8 @@ async function send() {
   const text = input.value.trim();
   if (!text || state.building) return;
   input.value = "";
-  addMessage("you", text);
+  // No optimistic echo — the message renders once, from the stream (handleEvent
+  // "user.message"), so it also survives reload/second-device resume.
   setBuilding(true);
   try {
     await ensureProject();
