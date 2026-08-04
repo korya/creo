@@ -41,12 +41,16 @@ still works.
 just run                     # serve locally on :8080 (fake model, no API key)
 just run anthropic:claude-sonnet-5   # real model; sources .env for the API key
 just build                   # web client, THEN the binary — Go embeds dist
-just test                    # full suite (Go incl. e2e + vitest)
-just test-short              # skips subprocess tests — the fast inner loop
+just test                    # fast tests (Go -short + vitest) — the inner loop
+just test-full               # everything, including e2e
 just check                   # format + lint + tidy, FIXING in place
 just check-ci                # the same checks, verify-only — never writes
 just check-go / just check-ts        # one side only (same for build-/test-)
 ```
+
+Short name = fast default; `-full` = comprehensive. CI
+(`.github/workflows/ci.yml`) runs `just check-ci` then `just test-full` — the
+same recipes you run locally, so the two cannot drift.
 
 `check` fixes, `check-ci` reports. The verify-only recipes never write: the
 module-graph probe is `go mod tidy -diff` (Go 1.23+), which prints what tidy

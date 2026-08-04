@@ -37,16 +37,19 @@ build-go:
 build-ts:
     cd web && npm run build
 
-[doc("Run the full test suite (Go + TypeScript)")]
+[doc("Run the fast tests — the default inner loop (skips e2e)")]
 test: test-go test-ts
 
-[doc("Go tests, including e2e — which builds and spawns the binary itself")]
-test-go:
-    go test ./...
+[doc("Run everything, including the e2e tests that spawn the binary")]
+test-full: test-go-full test-ts
 
-[doc("Go tests without the subprocess/e2e ones — the fast inner loop")]
-test-short:
+[doc("Go tests, skipping the subprocess/e2e ones")]
+test-go:
     go test ./... -short
+
+[doc("Go tests including e2e — builds and spawns the real binary")]
+test-go-full:
+    go test ./...
 
 [doc("Web client tests (vitest + jsdom)")]
 test-ts:
