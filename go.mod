@@ -3,12 +3,12 @@ module github.com/korya/creo
 go 1.26
 
 require (
+	github.com/anthropics/anthropic-sdk-go v1.61.0
 	github.com/oklog/ulid/v2 v2.1.0
 	modernc.org/sqlite v1.34.4
 )
 
 require (
-	github.com/anthropics/anthropic-sdk-go v1.61.0 // indirect
 	github.com/bahlo/generic-list-go v0.2.0 // indirect
 	github.com/buger/jsonparser v1.1.2 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
