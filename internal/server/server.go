@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/oklog/ulid/v2"
@@ -50,6 +51,7 @@ type Server struct {
 	h       *harness.Harness
 	http    *http.Server
 	serving *http.Server // origin-isolated site serving on ServeAddr
+	wg      sync.WaitGroup
 }
 
 func New(cfg Config) (*Server, error) {
@@ -196,6 +198,7 @@ func (s *Server) Run(ctx context.Context) error {
 	}()
 
 	for i := 0; i < s.cfg.Workers; i++ {
+		s.wg.Add(1)
 		go s.worker(ctx, fmt.Sprintf("worker-%d-%s", i, ulid.Make().String()))
 	}
 
@@ -218,6 +221,17 @@ func (s *Server) Run(ctx context.Context) error {
 		defer stop()
 		s.http.Shutdown(shutdownCtx)
 		s.serving.Shutdown(shutdownCtx)
+		// Give workers a brief, bounded window to relinquish in-flight runs to
+		// the recoverable pool before the DB closes. This waits for the
+		// relinquish *write*, not the build — on timeout, runs are still
+		// recovered via lease expiry (SIGKILL parity).
+		drained := make(chan struct{})
+		go func() { s.wg.Wait(); close(drained) }()
+		select {
+		case <-drained:
+		case <-time.After(2 * time.Second):
+			slog.Warn("worker drain timed out; in-flight runs recovered via lease expiry")
+		}
 		return s.db.Close()
 	case err := <-errCh:
 		return err
@@ -225,6 +239,7 @@ func (s *Server) Run(ctx context.Context) error {
 }
 
 func (s *Server) worker(ctx context.Context, workerID string) {
+	defer s.wg.Done()
 	for {
 		r, err := s.coord.Claim(ctx, workerID)
 		if err != nil {
@@ -268,8 +283,24 @@ func (s *Server) executeRun(ctx context.Context, workerID string, r *run.Run) {
 
 	text, err := s.h.Execute(runCtx, r)
 	if err != nil {
-		slog.Warn("run failed", "run", r.ID, "err", err)
-		if !errors.Is(err, eventlog.ErrStaleLease) {
+		// Classify by cancellation origin — a shutdown/lease-loss cancel is NOT
+		// a genuine failure and must not destroy recoverable work.
+		switch {
+		case errors.Is(err, eventlog.ErrStaleLease):
+			// Zombie after takeover — already fenced; write nothing.
+		case ctx.Err() != nil:
+			// Graceful shutdown — leave the run recoverable so the next boot
+			// resumes it, exactly like the SIGKILL path.
+			slog.Info("run left recoverable (shutdown)", "run", r.ID)
+			if e := s.coord.Relinquish(context.WithoutCancel(ctx), r.Lease); e != nil {
+				slog.Warn("relinquish failed", "run", r.ID, "err", e)
+			}
+		case runCtx.Err() != nil:
+			// Lease lost to a takeover — the new holder owns the narrative.
+			slog.Info("run yielded (lease lost)", "run", r.ID)
+		default:
+			// Genuine failure.
+			slog.Warn("run failed", "run", r.ID, "err", err)
 			s.h.EmitFailure(context.WithoutCancel(ctx), r, err)
 			s.coord.Complete(context.WithoutCancel(ctx), r.Lease, run.StatusFailed, err.Error())
 		}

@@ -103,6 +103,16 @@ func (e *env) sigkill() {
 	e.cmd = nil
 }
 
+// sigterm sends a graceful shutdown signal (deploy / Ctrl-C) and waits for exit.
+func (e *env) sigterm() {
+	e.t.Helper()
+	if err := e.cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		e.t.Fatal(err)
+	}
+	e.cmd.Wait()
+	e.cmd = nil
+}
+
 func (e *env) url(path string) string { return "http://" + e.addr + path }
 
 func (e *env) call(method, path string, body any, headers map[string]string, out any) {
@@ -227,6 +237,50 @@ func TestKillDashNineAndResume(t *testing.T) {
 		t.Fatalf("want 1 committed version, got %d", len(versions))
 	}
 	// All eight pages of the script exist: the resumed run continued, not restarted.
+	for i := 1; i <= 8; i++ {
+		p := filepath.Join(e.dataDir, "workspaces", projectID, fmt.Sprintf("page%d.html", i))
+		if _, err := os.Stat(p); err != nil {
+			t.Fatalf("missing %s after resume: %v", p, err)
+		}
+	}
+}
+
+// Fix-04: a GRACEFUL shutdown (SIGTERM — deploy/Ctrl-C) mid-run must leave the
+// run recoverable and resume it on restart, NOT fail it. The twin of the
+// SIGKILL test, with the extra guard that zero run.failed events are emitted.
+func TestSigtermMidRunResumes(t *testing.T) {
+	e := newEnv(t, "fake:slow-site")
+	e.start()
+	projectID, sessionID := e.newProject("sigterm-test")
+	runID, _ := e.say(sessionID, "build me a big site", "k1")
+
+	e.waitFor(sessionID, 20*time.Second, func(evs []event) bool {
+		return count(evs, "tool.result") >= 3
+	})
+	e.sigterm() // graceful — the run must be relinquished, not failed
+
+	e.start() // same data dir: the relinquished (recovering) run resumes at once
+	evs := e.waitFor(sessionID, 60*time.Second, func(evs []event) bool {
+		return count(evs, "run.completed") == 1
+	})
+
+	// The core guarantee: no false failure from the graceful shutdown.
+	if got := count(evs, "run.failed"); got != 0 {
+		t.Fatalf("graceful shutdown produced %d run.failed events (want 0)", got)
+	}
+	if got := count(evs, "run.resumed"); got != 1 {
+		t.Fatalf("want exactly 1 run.resumed, got %d", got)
+	}
+	for i, ev := range evs {
+		if ev.Seq != int64(i+1) {
+			t.Fatalf("sequence gap at index %d: seq %d", i, ev.Seq)
+		}
+	}
+	var r struct{ Status string }
+	e.call("GET", "/v1/runs/"+runID, nil, nil, &r)
+	if r.Status != "completed" {
+		t.Fatalf("run status after graceful-restart resume: %s", r.Status)
+	}
 	for i := 1; i <= 8; i++ {
 		p := filepath.Join(e.dataDir, "workspaces", projectID, fmt.Sprintf("page%d.html", i))
 		if _, err := os.Stat(p); err != nil {

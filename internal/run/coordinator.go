@@ -211,6 +211,33 @@ func (c *Coordinator) Complete(ctx context.Context, lease eventlog.Lease, status
 	return err
 }
 
+// Relinquish yields a held run back to the recoverable pool without failing it
+// — used on graceful shutdown so the next boot (or a co-resident worker) claims
+// it immediately rather than waiting for the lease to expire. Lease-fenced
+// (RC-3): only the current holder can, and a superseded holder is a no-op. The
+// run lands in `recovering` (RC-4 waiting state), which Claim selects directly.
+func (c *Coordinator) Relinquish(ctx context.Context, lease eventlog.Lease) error {
+	err := c.db.Write(ctx, func(tx *sql.Tx) error {
+		now := time.Now().UTC().Format(time.RFC3339Nano)
+		res, err := tx.Exec(
+			`UPDATE runs SET status = ?, lease_expires_at = '', updated_at = ? WHERE id = ? AND lease_worker = ? AND lease_gen = ? AND status = ?`,
+			StatusRecovering, now, lease.RunID, lease.WorkerID, lease.Gen, StatusRunning,
+		)
+		if err != nil {
+			return err
+		}
+		n, _ := res.RowsAffected()
+		if n == 0 {
+			return fmt.Errorf("%w: relinquish of run %s gen %d", ErrLeaseLost, lease.RunID, lease.Gen)
+		}
+		return nil
+	})
+	if err == nil {
+		c.Poke()
+	}
+	return err
+}
+
 // RecoverOrphans moves expired-lease running runs to recovering (RC-4, RC-5).
 func (c *Coordinator) RecoverOrphans(ctx context.Context) (int64, error) {
 	var n int64

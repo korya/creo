@@ -135,6 +135,42 @@ func TestFencingAfterTakeover(t *testing.T) {
 	}
 }
 
+// Relinquish (fix-04): a held run yields to `recovering` and is immediately
+// claimable; a superseded holder's relinquish is a fenced no-op.
+func TestRelinquish(t *testing.T) {
+	c, _, _ := testCoord(t, time.Minute)
+	ctx := context.Background()
+	c.RequestRun(ctx, "s_p1", "p1", "e1", "k1")
+	r1, _ := c.Claim(ctx, "w1")
+	if r1 == nil {
+		t.Fatal("claim failed")
+	}
+	// Graceful hand-off: relinquish leaves it recovering, no failure.
+	if err := c.Relinquish(ctx, r1.Lease); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := c.Get(ctx, r1.ID)
+	if got.Status != StatusRecovering {
+		t.Fatalf("want recovering after relinquish, got %s", got.Status)
+	}
+	// Immediately claimable (no lease-expiry wait), with a higher generation.
+	r2, _ := c.Claim(ctx, "w2")
+	if r2 == nil || r2.ID != r1.ID {
+		t.Fatalf("relinquished run not immediately claimable: %+v", r2)
+	}
+	if r2.Lease.Gen <= r1.Lease.Gen {
+		t.Fatalf("generation must increase on re-claim: %d -> %d", r1.Lease.Gen, r2.Lease.Gen)
+	}
+	// The old holder can no longer relinquish (fenced).
+	if err := c.Relinquish(ctx, r1.Lease); !errors.Is(err, ErrLeaseLost) {
+		t.Fatalf("stale relinquish: want ErrLeaseLost, got %v", err)
+	}
+	got, _ = c.Get(ctx, r1.ID)
+	if got.Status != StatusRunning {
+		t.Fatalf("stale relinquish must not disturb the new holder: %s", got.Status)
+	}
+}
+
 // RC-4 + RC-5: an expired-lease run becomes claimable; nothing is stuck in limbo.
 func TestRecoveryScan(t *testing.T) {
 	c, _, _ := testCoord(t, 30*time.Millisecond)
