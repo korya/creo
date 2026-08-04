@@ -18,18 +18,14 @@ import (
 	"github.com/korya/creo/internal/publish"
 )
 
-// StaticCSP forbids external resources — self-contained sites only. 'unsafe-inline'
-// is allowed because the agent writes inline styles/scripts; tightened per profile later.
-const StaticCSP = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; " +
-	"img-src 'self' data:; font-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'self'; form-action 'self'"
-
 type Gateway struct {
 	projects *project.Store
 	publish  *publish.Store
+	csp      string // from the vertical profile's artifact policy (R-PUB-3)
 }
 
-func New(projects *project.Store, pub *publish.Store) *Gateway {
-	return &Gateway{projects: projects, publish: pub}
+func New(projects *project.Store, pub *publish.Store, csp string) *Gateway {
+	return &Gateway{projects: projects, publish: pub, csp: csp}
 }
 
 func (g *Gateway) Routes() http.Handler {
@@ -90,8 +86,8 @@ func (g *Gateway) serveFile(w http.ResponseWriter, r *http.Request, projectID, v
 	}
 	defer blob.Close()
 
-	// CSP on every response — static-site policy (R-PUB-3).
-	w.Header().Set("Content-Security-Policy", StaticCSP)
+	// CSP on every response — from the vertical profile (R-PUB-3).
+	w.Header().Set("Content-Security-Policy", g.csp)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	if ct := mime.TypeByExtension(path.Ext(reqPath)); ct != "" {
 		w.Header().Set("Content-Type", ct)

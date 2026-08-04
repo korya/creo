@@ -14,11 +14,16 @@ import (
 
 	"github.com/korya/creo/internal/eventlog"
 	"github.com/korya/creo/internal/model"
+	"github.com/korya/creo/internal/profile"
 	"github.com/korya/creo/internal/project"
 	"github.com/korya/creo/internal/run"
 	"github.com/korya/creo/internal/tenant"
 	"github.com/korya/creo/internal/workspace"
 )
+
+// DefaultProfile is the websites vertical (M3). Kept here so server/tests have
+// one entry point; the definition lives in the profile package.
+func DefaultProfile() profile.Profile { return profile.Websites() }
 
 const (
 	EvRunStarted     = "run.started"
@@ -47,7 +52,7 @@ type Harness struct {
 	Projects   *project.Store
 	Workspaces *workspace.Provider
 	Gateway    *model.Metered
-	Profile    Profile
+	Profile    profile.Profile
 }
 
 // Execute drives one run to completion. It returns the plain-language final
@@ -58,6 +63,12 @@ type Harness struct {
 func (h *Harness) Execute(ctx context.Context, r *run.Run) (string, error) {
 	lease := &r.Lease
 	sessionID := r.SessionID
+
+	// Capability-by-construction: refuse a palette that exceeds the profile's
+	// execution level before doing any work (docs/components.md §10).
+	if err := h.Profile.ValidatePalette(); err != nil {
+		return "", err
+	}
 
 	prior, err := h.Log.Read(ctx, sessionID, 0, nil)
 	if err != nil {
@@ -119,7 +130,7 @@ func (h *Harness) Execute(ctx context.Context, r *run.Run) (string, error) {
 		}
 
 		comp, err := h.Gateway.Complete(ctx, r.ID, model.Request{
-			System:   h.Profile.System,
+			System:   h.Profile.SystemPrompt(),
 			Messages: msgs,
 			Tools:    h.Profile.Tools,
 		})

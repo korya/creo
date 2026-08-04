@@ -132,7 +132,7 @@ func New(cfg Config) (*Server, error) {
 	}
 	s.serving = &http.Server{
 		Addr:    cfg.ServeAddr,
-		Handler: serving.New(ps, pub).Routes(),
+		Handler: serving.New(ps, pub, harness.DefaultProfile().CSP).Routes(),
 	}
 	return s, nil
 }
