@@ -48,7 +48,12 @@ export class Api {
     return h;
   }
 
-  private async json<T>(method: string, path: string, body?: unknown, extra?: Record<string, string>): Promise<T> {
+  private async json<T>(
+    method: string,
+    path: string,
+    body?: unknown,
+    extra?: Record<string, string>,
+  ): Promise<T> {
     const res = await fetch(this.base + path, {
       method,
       headers: this.headers(extra),
@@ -74,17 +79,33 @@ export class Api {
     return this.json<Project[]>("GET", "/v1/projects");
   }
 
-  sendMessage(sessionId: string, text: string, idempotencyKey: string): Promise<{ runId: string; deduped: boolean }> {
-    return this.json("POST", `/v1/sessions/${sessionId}/messages`, { text }, { "Idempotency-Key": idempotencyKey });
+  sendMessage(
+    sessionId: string,
+    text: string,
+    idempotencyKey: string,
+  ): Promise<{ runId: string; deduped: boolean }> {
+    return this.json(
+      "POST",
+      `/v1/sessions/${sessionId}/messages`,
+      { text },
+      { "Idempotency-Key": idempotencyKey },
+    );
   }
 
   // Cursor-based replay of the whole session (used to hydrate on load).
   fetchEvents(sessionId: string, after = 0): Promise<Event[]> {
-    return this.json<Event[]>("GET", `/v1/sessions/${sessionId}/events?stream=false&after=${after}`);
+    return this.json<Event[]>(
+      "GET",
+      `/v1/sessions/${sessionId}/events?stream=false&after=${after}`,
+    );
   }
 
   publish(projectId: string, versionId?: string): Promise<PublishResult> {
-    return this.json<PublishResult>("POST", `/v1/projects/${projectId}/publish`, versionId ? { versionId } : {});
+    return this.json<PublishResult>(
+      "POST",
+      `/v1/projects/${projectId}/publish`,
+      versionId ? { versionId } : {},
+    );
   }
 
   rollback(projectId: string): Promise<PublishResult> {

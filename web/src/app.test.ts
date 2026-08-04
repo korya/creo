@@ -37,7 +37,9 @@ describe("build progress rendering", () => {
   it("shows a transient build card from tool.result progress, not transcript bubbles", () => {
     handleEvent(ev("run.started"));
     expect(document.getElementById("build-card")).not.toBeNull();
-    expect(document.getElementById("screen-workspace")?.getAttribute("data-preview")).toBe("building");
+    expect(document.getElementById("screen-workspace")?.getAttribute("data-preview")).toBe(
+      "building",
+    );
 
     handleEvent(ev("tool.result", "Working on your home page"));
     handleEvent(ev("tool.result", "Working on the styling"));
@@ -56,7 +58,9 @@ describe("build progress rendering", () => {
     expect(document.getElementById("build-card")).toBeNull();
     expect(document.getElementById("screen-workspace")?.classList.contains("building")).toBe(false);
     // The final message IS a transcript bubble.
-    expect([...document.querySelectorAll(".msg")].map((m) => m.textContent)).toContain("Your site is ready!");
+    expect([...document.querySelectorAll(".msg")].map((m) => m.textContent)).toContain(
+      "Your site is ready!",
+    );
   });
 
   it("does not add a step for tool.result with no phrase (inspection tools)", () => {
