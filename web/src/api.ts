@@ -20,6 +20,14 @@ export interface PublishResult {
   versionId: string;
 }
 
+export interface Version {
+  id: string;
+  seq: number;
+  parentId?: string;
+  producedByEvent: string;
+  createdAt: string;
+}
+
 export class Api {
   constructor(
     private base = "",
@@ -28,6 +36,10 @@ export class Api {
 
   setToken(token: string) {
     this.token = token;
+  }
+
+  hasToken(): boolean {
+    return this.token !== "";
   }
 
   private headers(extra: Record<string, string> = {}): Record<string, string> {
@@ -81,6 +93,11 @@ export class Api {
 
   preview(projectId: string): Promise<{ url: string; versionId: string }> {
     return this.json("GET", `/v1/projects/${projectId}/preview`);
+  }
+
+  // Newest-first list of a project's saved versions (its history).
+  versions(projectId: string): Promise<Version[]> {
+    return this.json<Version[]>("GET", `/v1/projects/${projectId}/versions`);
   }
 
   // Live tail over SSE. Returns an unsubscribe. EventSource can't send an

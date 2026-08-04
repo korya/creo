@@ -4,74 +4,433 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Creo — build your website</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Young+Serif&family=Karla:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
     <style>
-      :root { --bg: #f4f1ea; --ink: #2b2620; --accent: #b5651d; --panel: #fffdf8; --line: #e3ddce; }
-      /* Three type tiers only, ~1.35 ratio apart: brand 22 / content 15 / meta 12. */
+      :root {
+        --paper: #fbf5ed;
+        --card: #fffdf9;
+        --desk: #f3ece0;
+        --ink: #2e2a24;
+        --ink-soft: #5b5245;
+        --ink-mute: #6e6558;
+        --muted: #8c8172;
+        --faint: #b3a78f;
+        --line: #eae0d0;
+        --marigold: #e9a23b;
+        --marigold-dark: #de9426;
+        --marigold-soft: #fdf0dc;
+        --marigold-ink: #7a5a1b;
+        --spruce: #3e6b4f;
+        --spruce-soft: #e7f0e8;
+        --serif: "Young Serif", Georgia, serif;
+        --sans: "Karla", system-ui, sans-serif;
+        --sticker: 0 2px 0 rgba(46, 42, 36, 0.18);
+      }
       * { box-sizing: border-box; }
-      body { margin: 0; font-family: Georgia, "Times New Roman", serif; font-size: 15px; color: var(--ink); background: var(--bg); height: 100vh; display: flex; flex-direction: column; }
-      header { padding: 10px 18px; border-bottom: 1px solid var(--line); display: flex; align-items: baseline; gap: 16px; }
-      header h1 { font-size: 22px; font-weight: 700; letter-spacing: -0.01em; margin: 0; }
-      header .grow { flex: 1; }
-      header input { font-family: monospace; font-size: 11px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 4px; width: 240px; }
-      #status { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: #8a8272; }
-      main { flex: 1; display: grid; grid-template-columns: 380px 1fr; min-height: 0; }
-      #chat { display: flex; flex-direction: column; border-right: 1px solid var(--line); min-height: 0; }
-      #log { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
-      .msg { padding: 9px 12px; border-radius: 10px; max-width: 92%; line-height: 1.45; white-space: pre-wrap; }
-      .msg.you { align-self: flex-end; background: var(--accent); color: #fff; }
-      .msg.creo { align-self: flex-start; background: var(--panel); border: 1px solid var(--line); }
-      .msg.system { align-self: center; font-size: 11px; color: #8a8272; font-style: italic; }
-      #composer { border-top: 1px solid var(--line); padding: 12px; display: flex; gap: 8px; }
-      #input { flex: 1; resize: none; height: 54px; padding: 8px; font-family: inherit; font-size: 15px; border: 1px solid var(--line); border-radius: 8px; }
-      button { font-family: inherit; font-size: 15px; padding: 8px 16px; border: none; border-radius: 8px; background: var(--accent); color: #fff; cursor: pointer; }
-      button:disabled { opacity: 0.5; cursor: default; }
-      #preview-pane { display: flex; flex-direction: column; min-height: 0; }
-      #preview-bar { padding: 8px 14px; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 12px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: #8a8272; }
-      #preview-bar .grow { flex: 1; }
-      #live { color: var(--accent); }
-      #preview-body { position: relative; flex: 1; }
+      html, body { height: 100%; }
+      body {
+        margin: 0;
+        font-family: var(--sans);
+        font-size: 15px;
+        color: var(--ink);
+        background: var(--paper);
+        -webkit-font-smoothing: antialiased;
+      }
+      h1, h2, h3 { font-family: var(--serif); font-weight: 400; margin: 0; }
+
+      /* ---- shared pieces ---- */
+      .brand { display: flex; align-items: center; gap: 9px; }
+      .brand .dot { width: 11px; height: 11px; border-radius: 50%; background: var(--marigold); flex-shrink: 0; }
+      .brand .name { font-family: var(--serif); font-size: 20px; }
+
+      button { font-family: var(--sans); cursor: pointer; border: none; background: none; color: inherit; }
+      .btn {
+        font-family: var(--sans); font-weight: 700; font-size: 15px;
+        padding: 11px 22px; border-radius: 999px;
+        background: var(--marigold); color: var(--ink);
+        box-shadow: var(--sticker); transition: background 0.15s ease, transform 0.05s ease;
+      }
+      .btn:hover { background: var(--marigold-dark); }
+      .btn:active { transform: translateY(1px); }
+      .btn:disabled { opacity: 0.45; cursor: default; box-shadow: none; }
+      .btn.ghost {
+        background: transparent; color: var(--ink-soft); font-weight: 600;
+        border: 1.5px solid var(--line); box-shadow: none;
+      }
+      .btn.ghost:hover { background: rgba(46, 42, 36, 0.04); }
+      .btn.small { padding: 7px 15px; font-size: 13px; }
+      .btn.dark { background: var(--ink); color: var(--paper); box-shadow: none; }
+      .btn.dark:hover { background: #1f1b16; }
+
+      .pill { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 700;
+        padding: 2px 9px; border-radius: 999px; }
+      .pill.online { color: var(--spruce); background: var(--spruce-soft); }
+      .pill.online .live-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--spruce); }
+      .pill.current { color: var(--marigold-ink); background: var(--marigold-soft); }
+
+      .hidden { display: none !important; }
+
+      @keyframes cfadeup { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+      @keyframes cpulse { 0%, 100% { opacity: 0.3; transform: scale(0.85); } 50% { opacity: 1; transform: scale(1); } }
+      @keyframes cbreathe { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.05); } }
+      @keyframes cdrift { to { transform: translateY(110vh) rotate(360deg); } }
+
+      /* =================== SITE KEY =================== */
+      #screen-key { min-height: 100%; display: flex; align-items: center; justify-content: center; padding: 24px; }
+      #screen-key .card {
+        width: 440px; max-width: 100%; background: var(--card); border: 1px solid var(--line);
+        border-radius: 22px; padding: 34px; box-shadow: 0 10px 40px rgba(46, 42, 36, 0.08);
+        animation: cfadeup 0.4s ease both;
+      }
+      #screen-key h1 { font-size: 30px; margin: 18px 0 8px; }
+      #screen-key p { color: var(--ink-mute); line-height: 1.55; margin: 0 0 22px; }
+      #screen-key label { display: block; font-size: 13px; font-weight: 700; color: var(--muted); margin-bottom: 7px; }
+      .field {
+        width: 100%; font-family: var(--sans); font-size: 15px; padding: 12px 14px;
+        border: 1.5px solid var(--line); border-radius: 12px; background: var(--paper); color: var(--ink);
+      }
+      .field:focus { outline: none; border-color: var(--marigold); background: var(--card); }
+      #key-error { color: var(--marigold-ink); background: var(--marigold-soft); border-radius: 10px;
+        padding: 9px 12px; font-size: 13px; margin-top: 14px; }
+      #key-skip { display: block; margin-top: 18px; font-size: 13.5px; color: var(--muted);
+        background: none; text-decoration: underline; text-underline-offset: 3px; }
+
+      /* =================== YOUR SITES =================== */
+      #screen-home { min-height: 100%; display: flex; flex-direction: column; }
+      .home-top { padding: 20px 30px; display: flex; align-items: center; border-bottom: 1px solid var(--line); }
+      .home-top .grow { flex: 1; }
+      .home-body { flex: 1; max-width: 920px; width: 100%; margin: 0 auto; padding: 40px 30px; }
+      .home-body h1 { font-size: 34px; margin-bottom: 6px; }
+      .home-body .lead { color: var(--muted); font-size: 16px; margin-bottom: 30px; }
+
+      #home-empty { text-align: center; padding: 60px 20px; animation: cfadeup 0.4s ease both; }
+      #home-empty .circle {
+        width: 120px; height: 120px; border-radius: 50%; margin: 0 auto 26px;
+        background: var(--marigold-soft); border: 2px solid var(--marigold);
+        display: flex; align-items: center; justify-content: center; font-size: 46px; color: var(--marigold);
+        animation: cbreathe 3.4s ease-in-out infinite; cursor: pointer;
+      }
+      #home-empty h2 { font-size: 26px; margin-bottom: 10px; }
+      #home-empty p { color: var(--ink-mute); max-width: 420px; margin: 0 auto 24px; line-height: 1.6; }
+
+      #site-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 20px; }
+      .site-card {
+        background: var(--card); border: 1px solid var(--line); border-radius: 18px; overflow: hidden;
+        cursor: pointer; box-shadow: 0 3px 0 rgba(46, 42, 36, 0.05); transition: transform 0.12s ease;
+        animation: cfadeup 0.35s ease both;
+      }
+      .site-card:hover { transform: translateY(-2px); }
+      .site-card .hero { height: 92px; display: flex; align-items: center; justify-content: center;
+        color: var(--paper); font-family: var(--serif); font-size: 20px; }
+      .site-card .meta { padding: 15px 16px; }
+      .site-card .meta .row { display: flex; align-items: center; gap: 8px; }
+      .site-card .meta b { font-size: 16px; }
+      .site-card .meta .sub { font-size: 12.5px; color: var(--muted); margin-top: 4px; }
+      .site-card.new { border: 2px dashed var(--line); background: transparent; box-shadow: none;
+        display: flex; align-items: center; justify-content: center; min-height: 168px; color: var(--muted);
+        font-weight: 600; text-align: center; }
+      .site-card.new:hover { border-color: var(--marigold); color: var(--marigold-ink); }
+
+      /* =================== WORKSPACE =================== */
+      #screen-workspace { height: 100%; display: flex; flex-direction: column; }
+      .ws-head {
+        display: flex; align-items: center; gap: 16px; padding: 12px 22px;
+        border-bottom: 1px solid var(--line); background: var(--paper);
+      }
+      .ws-head .back { font-size: 18px; color: var(--muted); padding: 2px 4px; }
+      .ws-head .title { font-family: var(--serif); font-size: 20px; }
+      .ws-head .grow { flex: 1; }
+      #ws-status { font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 7px; }
+      #ws-status .spin { width: 8px; height: 8px; border-radius: 50%; background: var(--marigold);
+        animation: cpulse 1s ease-in-out infinite; display: none; }
+      #screen-workspace.building #ws-status .spin { display: inline-block; }
+
+      .ws-main { flex: 1; display: grid; grid-template-columns: 400px 1fr; min-height: 0; }
+
+      /* ---- chat column ---- */
+      .chat { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--line); }
+      #log { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 14px; }
+      .msg { max-width: 92%; line-height: 1.5; animation: cfadeup 0.28s ease both; }
+      .msg.you {
+        align-self: flex-end; background: var(--marigold); color: var(--ink);
+        padding: 11px 15px; border-radius: 16px 16px 5px 16px; font-weight: 500;
+        box-shadow: var(--sticker);
+      }
+      .msg.creo {
+        align-self: flex-start; background: var(--card); border: 1px solid var(--line);
+        padding: 12px 15px; border-radius: 16px 16px 16px 5px;
+      }
+      .msg.note { align-self: center; text-align: center; font-size: 13px; color: var(--muted);
+        background: none; max-width: 100%; }
+      .msg.decision {
+        align-self: flex-start; background: var(--marigold-soft); border: 1px solid #f2dfbc;
+        border-radius: 14px; padding: 13px 15px; max-width: 100%; width: 100%;
+      }
+      .msg.decision .q { font-weight: 700; margin-bottom: 9px; }
+      .msg.decision .opts { display: flex; flex-wrap: wrap; gap: 8px; }
+
+      /* build card: a single self-replacing progress checklist (never transcript) */
+      #build-card {
+        align-self: stretch; background: var(--card); border: 1px solid var(--line);
+        border-radius: 14px; padding: 14px 16px; animation: cfadeup 0.28s ease both;
+      }
+      #build-card .head { display: flex; align-items: center; gap: 9px; font-weight: 700; margin-bottom: 12px; }
+      #build-card .dots { display: flex; gap: 5px; }
+      #build-card .dots span { width: 8px; height: 8px; border-radius: 50%; background: var(--marigold); }
+      #build-card .dots span:nth-child(1) { animation: cpulse 1.2s ease-in-out infinite; }
+      #build-card .dots span:nth-child(2) { animation: cpulse 1.2s ease-in-out 0.2s infinite; }
+      #build-card .dots span:nth-child(3) { animation: cpulse 1.2s ease-in-out 0.4s infinite; }
+      #build-steps { display: flex; flex-direction: column; gap: 7px; }
+      .step { display: flex; align-items: center; gap: 9px; font-size: 13.5px; color: var(--ink-soft); }
+      .step .mark { width: 16px; text-align: center; flex-shrink: 0; }
+      .step.done .mark { color: var(--spruce); }
+      .step.active { color: var(--ink); font-weight: 600; }
+      .step.active .mark { color: var(--marigold); }
+
+      /* chips + composer */
+      #chips { display: flex; flex-wrap: wrap; gap: 8px; padding: 0 20px 12px; }
+      .chip {
+        font-size: 13px; font-weight: 600; padding: 7px 13px; border-radius: 999px;
+        border: 1.5px solid var(--line); background: var(--card); color: var(--ink-soft);
+      }
+      .chip:hover { border-color: var(--marigold); color: var(--marigold-ink); background: var(--marigold-soft); }
+      .composer { border-top: 1px solid var(--line); padding: 14px; display: flex; gap: 10px; align-items: flex-end; }
+      #input {
+        flex: 1; resize: none; height: 46px; max-height: 140px; padding: 12px 14px; font-family: var(--sans);
+        font-size: 15px; border: 1.5px solid var(--line); border-radius: 18px; background: var(--card); color: var(--ink);
+      }
+      #input:focus { outline: none; border-color: var(--marigold); }
+      #limit-banner { margin: 0 14px 10px; background: var(--marigold-soft); border-radius: 12px;
+        padding: 10px 13px; font-size: 13px; color: var(--marigold-ink); line-height: 1.45; }
+
+      /* ---- preview desk ---- */
+      .desk { display: flex; flex-direction: column; min-height: 0; background: var(--desk); }
+      .desk-bar { padding: 10px 18px; display: flex; align-items: center; gap: 12px;
+        border-bottom: 1px solid var(--line); background: var(--paper); }
+      .desk-bar .url { font-size: 13px; color: var(--muted); }
+      .desk-bar .grow { flex: 1; }
+      .desk-body { flex: 1; position: relative; overflow: hidden; }
+
+      #preview-empty, #preview-building {
+        position: absolute; inset: 0; display: flex; flex-direction: column;
+        align-items: center; justify-content: center; text-align: center; padding: 40px; color: var(--muted);
+      }
+      #preview-empty h3 { font-size: 22px; color: var(--ink); margin-bottom: 10px; }
+      #preview-empty p { max-width: 360px; line-height: 1.6; }
+      #preview-building .dots { display: flex; gap: 9px; margin-bottom: 18px; }
+      #preview-building .dots span { width: 12px; height: 12px; border-radius: 50%; background: var(--marigold); }
+      #preview-building .dots span:nth-child(1) { animation: cpulse 1.2s ease-in-out infinite; }
+      #preview-building .dots span:nth-child(2) { animation: cpulse 1.2s ease-in-out 0.2s infinite; }
+      #preview-building .dots span:nth-child(3) { animation: cpulse 1.2s ease-in-out 0.4s infinite; }
       iframe#preview { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: #fff; }
-      /* Transient build-progress line (never part of the transcript). */
-      .activity { align-self: flex-start; padding: 8px 12px; font-size: 11px; color: #8a8272; font-style: italic; }
-      .activity::after { content: ""; }
-      @keyframes creo-pulse { 0%,100% { opacity: 0.35 } 50% { opacity: 1 } }
-      .activity { animation: creo-pulse 1.4s ease-in-out infinite; }
-      /* Preview "building" overlay — replaces the blank white during a run. */
-      #preview-overlay { position: absolute; inset: 0; display: none; align-items: center; justify-content: center;
-        background: var(--bg); color: #8a8272; font-size: 15px; z-index: 2; }
-      #preview-pane.building #preview-overlay { display: flex; animation: creo-pulse 1.4s ease-in-out infinite; }
+
+      /* preview visibility is state-driven */
+      .desk .show-empty #preview-empty { display: flex; }
+      #preview-empty, #preview-building { display: none; }
+      #screen-workspace[data-preview="empty"] #preview-empty { display: flex; }
+      #screen-workspace[data-preview="building"] #preview-building { display: flex; }
+      #screen-workspace[data-preview="building"] #preview,
+      #screen-workspace[data-preview="empty"] #preview { visibility: hidden; }
+
+      /* =================== HISTORY DRAWER =================== */
+      #history-drawer {
+        position: fixed; top: 0; right: 0; bottom: 0; width: 360px; max-width: 90vw;
+        background: var(--paper); border-left: 1px solid var(--line);
+        box-shadow: -10px 0 30px rgba(46, 42, 36, 0.08); display: flex; flex-direction: column;
+        animation: cfadeup 0.25s ease both; z-index: 30;
+      }
+      #history-drawer .h-head { padding: 18px 20px 14px; border-bottom: 1px solid var(--line); }
+      #history-drawer .h-head .row { display: flex; align-items: center; }
+      #history-drawer h2 { font-size: 20px; flex: 1; }
+      #history-drawer .h-head .sub { font-size: 13px; color: var(--muted); margin-top: 5px; line-height: 1.45; }
+      #history-list { flex: 1; overflow-y: auto; padding: 16px 20px; display: flex; flex-direction: column; gap: 10px; }
+      .ver {
+        background: var(--card); border: 1.5px solid var(--line); border-radius: 14px; padding: 12px 14px;
+        animation: cfadeup 0.25s ease both;
+      }
+      .ver .row { display: flex; align-items: center; gap: 10px; }
+      .ver .swatch { width: 26px; height: 26px; border-radius: 7px; flex-shrink: 0; background: var(--marigold); }
+      .ver .info { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+      .ver .info .t { font-size: 14px; font-weight: 700; line-height: 1.3; }
+      .ver .info .s { font-size: 12px; color: var(--muted); }
+      #history-list .empty { text-align: center; color: var(--muted); font-size: 13.5px; line-height: 1.6; padding: 30px 10px; }
+      #history-list .foot { text-align: center; color: var(--faint); font-size: 12px; padding: 10px; line-height: 1.5; }
+
+      /* =================== MODALS =================== */
+      .scrim { position: fixed; inset: 0; background: rgba(46, 42, 36, 0.35); display: flex;
+        align-items: center; justify-content: center; z-index: 40; }
+      #publish-modal .box {
+        width: 420px; max-width: 90vw; background: var(--card); border-radius: 20px; padding: 28px;
+        box-shadow: 0 20px 60px rgba(46, 42, 36, 0.25); animation: cfadeup 0.3s ease both;
+      }
+      #publish-modal h2 { font-size: 23px; margin-bottom: 10px; }
+      #publish-modal p { color: var(--ink-mute); line-height: 1.55; margin: 0 0 18px; }
+      #publish-modal .preview-chip { border: 1px solid var(--line); border-radius: 12px; overflow: hidden; margin-bottom: 20px; }
+      #publish-modal .preview-chip .hero { height: 60px; display: flex; align-items: center; justify-content: center;
+        color: var(--paper); font-family: var(--serif); font-size: 16px; }
+      #publish-modal .preview-chip .u { padding: 9px 13px; font-size: 12.5px; color: var(--muted); }
+      #publish-modal .actions { display: flex; gap: 10px; }
+
+      /* celebration */
+      #celebration { position: fixed; inset: 0; background: var(--paper); display: flex; align-items: center;
+        justify-content: center; z-index: 50; overflow: hidden; }
+      #celebration .inner { text-align: center; max-width: 560px; padding: 32px; position: relative; z-index: 2; }
+      #celebration .check {
+        width: 84px; height: 84px; border-radius: 50%; background: var(--spruce); color: var(--paper);
+        font-size: 38px; line-height: 84px; margin: 0 auto 24px; animation: cbreathe 3s ease-in-out infinite;
+      }
+      #celebration h1 { font-size: 42px; margin-bottom: 12px; }
+      #celebration p { color: var(--ink-mute); font-size: 17px; line-height: 1.6; margin: 0 0 26px; }
+      #celebration .urlbar {
+        display: inline-flex; align-items: center; gap: 12px; background: var(--card);
+        border: 1.5px solid var(--line); border-radius: 999px; padding: 10px 10px 10px 22px; margin-bottom: 26px;
+      }
+      #celebration .urlbar .u { font-size: 17px; font-weight: 700; color: var(--spruce); }
+      #celebration .foot { margin-top: 22px; font-size: 13px; color: var(--muted); }
+      .confetti { position: absolute; top: -20px; width: 10px; height: 14px; border-radius: 2px; z-index: 1;
+        animation: cdrift linear infinite; }
+
+      @media (max-width: 760px) {
+        .ws-main { grid-template-columns: 1fr; grid-template-rows: 1fr 1fr; }
+        .chat { border-right: none; border-bottom: 1px solid var(--line); }
+      }
     </style>
-    <script type="module" crossorigin src="./assets/index-Dz3i9Iuh.js"></script>
+    <script type="module" crossorigin src="./assets/index-DJn1raDd.js"></script>
   </head>
   <body>
-    <header>
-      <h1>Creo</h1>
-      <span id="status">Ready</span>
-      <span class="grow"></span>
-      <input id="token" placeholder="access token (blank in --insecure)" />
-    </header>
-    <main>
-      <section id="chat">
-        <div id="log">
-          <div class="msg creo">Tell me about the website you'd like — what it's for, who it's for, and any details you have.</div>
+    <!-- =================== SITE KEY =================== -->
+    <section id="screen-key" class="hidden">
+      <div class="card">
+        <div class="brand"><span class="dot"></span><span class="name">Creo</span></div>
+        <h1>Welcome in</h1>
+        <p>Enter your site key to reach your websites. It keeps your work private to you.</p>
+        <label for="key-input">Your site key</label>
+        <input id="key-input" class="field" type="password" placeholder="paste your key" autocomplete="off" />
+        <div id="key-error" class="hidden"></div>
+        <div style="margin-top: 20px;">
+          <button id="key-go" class="btn" style="width: 100%;">Open my sites</button>
         </div>
-        <div id="composer">
-          <textarea id="input" placeholder="e.g. A site for my bakery with a menu and opening hours"></textarea>
-          <button id="send">Send</button>
+        <button id="key-skip">I'm on my own computer — no key needed</button>
+      </div>
+    </section>
+
+    <!-- =================== YOUR SITES =================== -->
+    <section id="screen-home" class="hidden">
+      <div class="home-top">
+        <div class="brand"><span class="dot"></span><span class="name">Creo</span></div>
+        <span class="grow"></span>
+        <button id="home-signout" class="btn ghost small hidden">Sign out</button>
+      </div>
+      <div class="home-body">
+        <h1>Your sites</h1>
+        <div class="lead">Everything you've made, right where you left it.</div>
+        <div id="home-empty" class="hidden">
+          <div class="circle" id="home-empty-cta">＋</div>
+          <h2>Let's make your first website</h2>
+          <p>Tell Creo about it in plain words — what it's for, who it's for — and watch it come to life.</p>
+          <button class="btn" id="home-empty-btn">Start a new site</button>
         </div>
-      </section>
-      <section id="preview-pane">
-        <div id="preview-bar">
-          <button id="publish" disabled>Publish</button>
-          <a id="live" href="#" target="_blank"></a>
-          <span class="grow"></span>
-          <span>Live preview</span>
+        <div id="site-grid" class="hidden"></div>
+      </div>
+    </section>
+
+    <!-- =================== WORKSPACE =================== -->
+    <section id="screen-workspace" class="hidden" data-preview="empty">
+      <div class="ws-head">
+        <button class="back" id="ws-back" title="Your sites">‹</button>
+        <div class="brand"><span class="dot"></span></div>
+        <div class="title" id="ws-title">Your site</div>
+        <span class="grow"></span>
+        <span id="ws-status"><span class="spin"></span><span id="ws-status-text">Ready</span></span>
+        <button id="ws-history" class="btn ghost small">History</button>
+        <button id="ws-publish" class="btn small" disabled>Publish</button>
+      </div>
+      <div class="ws-main">
+        <section class="chat">
+          <div id="log">
+            <div class="msg creo">
+              Tell me about the website you'd like — what it's for, who it's for, and any details you have.
+            </div>
+          </div>
+          <div id="chips">
+            <button class="chip">A bakery with a menu and hours</button>
+            <button class="chip">A portfolio for my photography</button>
+            <button class="chip">A landing page for my app</button>
+          </div>
+          <div id="limit-banner" class="hidden"></div>
+          <div class="composer">
+            <textarea id="input" placeholder="Describe your site, or ask for a change…"></textarea>
+            <button id="send" class="btn">Send</button>
+          </div>
+        </section>
+        <section class="desk">
+          <div class="desk-bar">
+            <span class="url" id="desk-url">Your site — preview</span>
+            <span class="grow"></span>
+            <a id="live-link" class="btn ghost small hidden" target="_blank" rel="noopener">View live site</a>
+          </div>
+          <div class="desk-body">
+            <div id="preview-empty">
+              <h3>Your site will appear here</h3>
+              <p>Describe what you'd like on the left, and Creo will build it in front of you.</p>
+            </div>
+            <div id="preview-building">
+              <div class="dots"><span></span><span></span><span></span></div>
+              <div id="preview-building-text">Creo is reading what you wrote…</div>
+            </div>
+            <iframe id="preview" title="Live preview"></iframe>
+          </div>
+        </section>
+      </div>
+    </section>
+
+    <!-- =================== HISTORY DRAWER =================== -->
+    <aside id="history-drawer" class="hidden">
+      <div class="h-head">
+        <div class="row">
+          <h2>Your site's history</h2>
+          <button id="history-close" class="btn ghost small">Close ✕</button>
         </div>
-        <div id="preview-body">
-          <div id="preview-overlay">Building your site…</div>
-          <iframe id="preview" title="Live preview"></iframe>
+        <div class="sub">Every change is saved automatically — nothing is ever lost.</div>
+      </div>
+      <div id="history-list"></div>
+    </aside>
+
+    <!-- =================== PUBLISH MODAL =================== -->
+    <div id="publish-modal" class="scrim hidden">
+      <div class="box">
+        <h2 id="publish-title">Put your site online?</h2>
+        <p id="publish-body">Anyone with the link will be able to visit it. You can keep editing afterwards — nothing changes online until you publish again.</p>
+        <div class="preview-chip">
+          <div class="hero" id="publish-hero">Your site</div>
+          <div class="u" id="publish-url">yoursite.creo.site</div>
         </div>
-      </section>
-    </main>
+        <div class="actions">
+          <button id="publish-go" class="btn" style="flex: 1;">Yes, put it online</button>
+          <button id="publish-cancel" class="btn ghost">Not yet</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- =================== CELEBRATION =================== -->
+    <div id="celebration" class="hidden">
+      <div class="inner">
+        <div class="check">✓</div>
+        <h1 id="celebrate-title">Your site is live!</h1>
+        <p>It's on the internet now — anyone with the link can visit it. Share it proudly.</p>
+        <div class="urlbar">
+          <span class="u" id="celebrate-url">yoursite.creo.site</span>
+          <button id="celebrate-copy" class="btn dark small">Copy link</button>
+        </div>
+        <div><button id="celebrate-close" class="btn">Keep building</button></div>
+        <div class="foot">You can keep changing your site — nothing goes online until you publish again.</div>
+      </div>
+    </div>
+
   </body>
 </html>
