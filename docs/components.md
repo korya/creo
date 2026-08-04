@@ -227,11 +227,11 @@ interface ProductProfile {
 
 **Backing:** embedded config in v-min (the websites profile ships in the binary); a registry when third-party verticals exist.
 
-## 11. IdentityService (minimal)
+## 11. IdentityService (minimal) — **implemented M1**
 
-**Responsibility.** Owns *who is calling*. Tiny in v-min — token mint/verify/revoke against one implicit tenant — but exists from day one so every authorization decision has a subject. Retrofitting identity under a system that assumed "the one user" is a rewrite; carrying `tenant_id` on every row from the start is a column.
+**Responsibility.** Owns *who is calling*. Tiny in v-min — token mint/verify/revoke plus per-tenant budget and quota queries — but exists from day one so every authorization decision has a subject. Retrofitting identity under a system that assumed "the one user" is a rewrite; carrying `tenant_id` on every row from the start is a column.
 
-**Surface:** `creo token create|list|revoke`; tokens stored hashed; auth mandatory even on LAN (the box is remotely reachable by definition of the deployment).
+**Surface (`internal/tenant`):** `Create`, `CreateToken` (plaintext shown once, SHA-256 at rest), `RevokeToken`, `Authenticate`, `CheckBudget` (daily token limit, UTC-midnight window — the R-LLM-5 hard stop, called from the ModelGateway), `TenantOfRun`. CLI: `creo tenant new|ls`, `creo token new|revoke` (local, operate on the data dir). Auth is mandatory on every `/v1` route; `serve --insecure` (loopback-only) maps to the default tenant for dev. Tokens are the tenant principal in M1; user objects arrive with the human-login surface (M3/M4).
 
 ## 12. ToolBroker (dormant in v-min)
 

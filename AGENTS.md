@@ -16,11 +16,12 @@ internal/eventlog/   SessionLog (contracts SL-1..5 + crash test)
 internal/run/        RunCoordinator (contracts RC-1..5)
 internal/workspace/  L0 SandboxProvider (path-confined file tools, no exec)
 internal/project/    ProjectStore (CAS versions, materialize, lineage)
-internal/model/      ModelGateway: anthropic + fake adapters, usage metering
+internal/model/      ModelGateway: anthropic + fake adapters, usage metering, budget hook
 internal/harness/    AgentHarness loop + embedded websites-v0 profile
-internal/api/        HTTP + SSE API (the only client surface)
+internal/tenant/     IdentityService: tokens, per-tenant budget + run quota
+internal/api/        HTTP + SSE API with bearer auth + tenant scoping (the only client surface)
 internal/server/     v-min process wiring: workers, renewal, recovery
-internal/e2e/        M0 acceptance: kill-9-resume, dup submit, workspace loss
+internal/e2e/        acceptance: kill-9-resume, dup submit, workspace loss, hostile containment, auth, budget
 spikes/              throwaway experiment code; never imported by the core
 scripts/             demo and operational scripts
 ```
@@ -50,6 +51,13 @@ Run locally: `./creo serve --data ./data --model fake:site` (no API key), or
 - **Plain-language userText** is authored at emit time in the harness — never
   synthesized client-side.
 - **Ports:** API `127.0.0.1:8080`; `:8081` reserved for served sites (M2).
+- **Every `/v1` route is tenant-scoped.** New routes MUST resolve the caller's
+  tenant (via the `auth` middleware) and scope their queries; a foreign or
+  missing resource returns 404, never 403. New routes MUST get a cross-tenant
+  isolation case in `internal/e2e/hostile_test.go`.
+- **Credentials never enter workspaces.** LLM keys live in the ModelGateway;
+  nothing at L0 touches external credentials. The budget check is at the
+  gateway — the one point no model call bypasses.
 - **TypeScript** (npm) enters at M3 for the web client and vertical tooling;
   the Go core does not import it.
 - **Commits:** one reviewable commit per component/step; imperative subject
