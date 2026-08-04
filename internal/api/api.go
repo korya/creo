@@ -41,15 +41,16 @@ type API struct {
 	projects  *project.Store
 	tenants   *tenant.Store
 	publish   *publish.Store
-	publicURL string // base URL of the serving port, e.g. http://127.0.0.1:8081
+	publicURL string       // base URL of the serving port, e.g. http://127.0.0.1:8081
+	web       http.Handler // the embedded SPA app shell, served at /
 
 	// insecureTenant, when non-empty, maps unauthenticated requests to that
 	// tenant. Set only by `serve --insecure` (loopback-only, dev mode).
 	insecureTenant string
 }
 
-func New(db *store.DB, log *eventlog.Log, coord *run.Coordinator, projects *project.Store, tenants *tenant.Store, pub *publish.Store, publicURL, insecureTenant string) *API {
-	return &API{db: db, log: log, coord: coord, projects: projects, tenants: tenants, publish: pub, publicURL: publicURL, insecureTenant: insecureTenant}
+func New(db *store.DB, log *eventlog.Log, coord *run.Coordinator, projects *project.Store, tenants *tenant.Store, pub *publish.Store, publicURL, insecureTenant string, web http.Handler) *API {
+	return &API{db: db, log: log, coord: coord, projects: projects, tenants: tenants, publish: pub, publicURL: publicURL, insecureTenant: insecureTenant, web: web}
 }
 
 func (a *API) Routes() http.Handler {
@@ -65,6 +66,11 @@ func (a *API) Routes() http.Handler {
 	mux.Handle("POST /v1/sessions/{id}/messages", a.auth(a.postMessage))
 	mux.Handle("GET /v1/sessions/{id}/events", a.auth(a.streamEvents))
 	mux.Handle("GET /v1/runs/{id}", a.auth(a.getRun))
+	// The web client app shell at / (and its static assets). Unauthenticated —
+	// it carries no tenant data; the client authenticates its own /v1 calls.
+	if a.web != nil {
+		mux.Handle("/", a.web)
+	}
 	return mux
 }
 
@@ -206,6 +212,14 @@ func (a *API) auth(next http.HandlerFunc) http.Handler {
 			return
 		}
 		token, ok := strings.CutPrefix(header, "Bearer ")
+		if !ok || token == "" {
+			// EventSource cannot set an Authorization header, so the SSE stream
+			// accepts the token as a query param (T1 posture — same secrecy as
+			// the bearer header over a trusted/loopback link; tightened at T2).
+			if q := r.URL.Query().Get("token"); q != "" {
+				token, ok = q, true
+			}
+		}
 		if !ok || token == "" {
 			httpError(w, http.StatusUnauthorized, "missing bearer token")
 			return

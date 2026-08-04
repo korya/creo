@@ -26,6 +26,7 @@ import (
 	"github.com/korya/creo/internal/serving"
 	"github.com/korya/creo/internal/store"
 	"github.com/korya/creo/internal/tenant"
+	"github.com/korya/creo/internal/webui"
 	"github.com/korya/creo/internal/workspace"
 )
 
@@ -38,6 +39,7 @@ type Config struct {
 	Workers   int           // default 2
 	LeaseTTL  time.Duration // default 15s
 	Insecure  bool          // map unauthenticated requests to t_default; loopback only
+	WebDir    string        // serve the web client from disk instead of the embedded bundle (dev)
 }
 
 type Server struct {
@@ -126,9 +128,14 @@ func New(cfg Config) (*Server, error) {
 		},
 	}
 	pub := publish.New(db)
+	web, err := webui.Handler(cfg.WebDir)
+	if err != nil {
+		db.Close()
+		return nil, err
+	}
 	s.http = &http.Server{
 		Addr:    cfg.Addr,
-		Handler: api.New(db, elog, coord, ps, tenants, pub, cfg.PublicURL, insecureTenant).Routes(),
+		Handler: api.New(db, elog, coord, ps, tenants, pub, cfg.PublicURL, insecureTenant, web).Routes(),
 	}
 	s.serving = &http.Server{
 		Addr:    cfg.ServeAddr,

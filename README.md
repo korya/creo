@@ -8,13 +8,25 @@ AI agent builds and evolves projects on a server you control; any client (web,
 CLI, mobile) attaches to the same durable session and continues. This repo
 contains the open-source core (Go) and the product/architecture docs.
 
-**Status: M2 — artifacts & publish** (on the M0 spine + M1 tenancy). Durable
-event-sourced sessions, crash-safe run coordination, the agent harness,
-bearer-token auth with per-tenant isolation and budgets, plus preview URLs,
-one-command publish/rollback to a live site (origin-isolated, static-only CSP),
-and project export. The M0 acceptance test still holds: SIGKILL the server
-mid-run, restart, the run resumes and completes. No web UI yet — see `PRD.md`
-§9 (M3 websites vertical → M5 self-host release).
+**Status: M3 — websites vertical + web client** (on M0 spine, M1 tenancy, M2
+publish). A non-coder opens a browser, describes a site, watches it build in a
+live preview, and publishes — the full describe → preview → refine → publish
+loop. Underneath: durable event-sourced sessions, crash-safe runs, per-tenant
+auth/budgets, the websites vertical as an enforced profile (static-only, no
+code execution), and origin-isolated publishing. The M0 acceptance test still
+holds: SIGKILL mid-run, restart, the run resumes and completes. Next: M4
+multi-device polish → M5 self-host release (`PRD.md` §9).
+
+## Try it in a browser
+
+```sh
+cd web && npm ci && npm run build && cd ..   # build the client (once)
+go build -o creo ./cmd/creo
+./creo serve --data ./data --model anthropic:claude-sonnet-5 --insecure
+# open http://127.0.0.1:8080 — describe a site, watch it build, click Publish
+```
+
+(`--insecure` is loopback-only dev mode. For a real model set `ANTHROPIC_API_KEY`.)
 
 ## Quickstart
 

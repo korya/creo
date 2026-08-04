@@ -208,9 +208,11 @@ interface PreviewGateway {
 
 **Contracts:** no mutation without an idempotency key; no route without a tenant scope; nothing reachable by the bundled web client that is not reachable by a third-party client with the same token.
 
-## 10. ProductProfile
+## 10. ProductProfile — **implemented M3**
 
 **Responsibility.** Owns the definition of a vertical *as data*: prompts, tool palette, artifact policy, execution level, vocabulary. Exists so a new product is configuration rather than a fork — and so restrictions live where the platform can *enforce* them rather than where the model is politely asked to behave.
+
+**Implementation (`internal/profile`):** `Websites()` is the M3 vertical — L0 execution level, file-tools-only palette, static-only CSP, explicit `SiteLanguage` (substituted into the system prompt; never inferred, per spike-01). `ValidatePalette()` runs at run start and refuses any palette containing an execution tool below L2 — capability-by-construction, not prompt request. The CSP flows to the PreviewGateway; the reference web client (`web/` → `internal/webui`) is the profile's front end, a thin consumer of the public API served at `/`.
 
 ```ts
 interface ProductProfile {

@@ -21,8 +21,11 @@ internal/harness/    AgentHarness loop + embedded websites-v0 profile
 internal/tenant/     IdentityService: tokens, per-tenant budget + run quota
 internal/publish/    live-version pointer + preview capability secret (atomic publish/rollback)
 internal/serving/    PreviewGateway read side: origin-isolated site serving on :8081, CSP
+internal/profile/    ProductProfile: websites vertical as data (palette, exec level, CSP, language)
+internal/webui/      embeds web/dist; serves the SPA app shell at /
 internal/api/        HTTP + SSE API with bearer auth + tenant scoping (the only client surface)
 internal/server/     v-min process wiring: two http.Servers (API + serving), workers, renewal, recovery
+web/                 reference web client (TypeScript + Vite); builds into internal/webui/dist
 internal/e2e/        acceptance: kill-9-resume, dup submit, workspace loss, hostile containment, auth, budget
 spikes/              throwaway experiment code; never imported by the core
 scripts/             demo and operational scripts
@@ -60,8 +63,13 @@ Run locally: `./creo serve --data ./data --model fake:site` (no API key), or
 - **Credentials never enter workspaces.** LLM keys live in the ModelGateway;
   nothing at L0 touches external credentials. The budget check is at the
   gateway — the one point no model call bypasses.
-- **TypeScript** (npm) enters at M3 for the web client and vertical tooling;
-  the Go core does not import it.
+- **Web client (`web/`)**: TypeScript, npm (Node 24), Vite, vitest. It is a
+  *thin* consumer of the public `/v1` API only (`src/api.ts` is the sole
+  surface). Build order: `cd web && npm run build` outputs to
+  `internal/webui/dist` (committed, so `go build` works on a fresh checkout),
+  then `go build ./cmd/creo`. Dev: `npm run dev` (proxies to a running server),
+  or `creo serve --web-dir web/... ` to serve a disk build without re-embedding.
+  Tests: `cd web && npm test` (vitest, jsdom). The Go core never imports it.
 - **Commits:** one reviewable commit per component/step; imperative subject
   prefixed with the area (`core:`, `docs:`, `api:`).
 

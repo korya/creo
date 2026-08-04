@@ -1,4 +1,5 @@
 .env
 node_modules/
+web/node_modules/
 spikes/01-harness/results/
 spikes/01-harness/work/

@@ -194,11 +194,12 @@ func cmdServe(args []string) error {
 	workers := fs.Int("workers", 2, "concurrent runs")
 	leaseTTL := fs.Duration("lease-ttl", 15*time.Second, "run lease TTL")
 	insecure := fs.Bool("insecure", false, "map unauthenticated requests to t_default (loopback only, dev mode)")
+	webDir := fs.String("web-dir", "", "serve the web client from a directory instead of the embedded bundle (dev)")
 	fs.Parse(args)
 
 	s, err := server.New(server.Config{
 		DataDir: *data, Addr: *addr, ServeAddr: *serveAddr, PublicURL: *publicURL,
-		Model: *modelSpec, Workers: *workers, LeaseTTL: *leaseTTL, Insecure: *insecure,
+		Model: *modelSpec, Workers: *workers, LeaseTTL: *leaseTTL, Insecure: *insecure, WebDir: *webDir,
 	})
 	if err != nil {
 		return err
