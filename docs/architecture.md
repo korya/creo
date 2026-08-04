@@ -85,7 +85,7 @@ error.translated                    // plain-language failure event
 
 ### 3.3 Projections
 
-Clients and the harness never replay a raw log for reads. Derived, rebuildable projections (ordinary Postgres tables updated from the outbox consumer):
+Clients and the harness never replay a raw log for reads. Derived, rebuildable projections — ordinary tables in the canonical store (SQLite in v-min, updated in-process; Postgres via the outbox consumer at cluster):
 
 ```
 session_current_state     run_current_state      pending_inputs_approvals
@@ -98,7 +98,7 @@ Events remain authoritative; every projection can be dropped and rebuilt from th
 
 - **Commands:** authenticated HTTP, every mutating command carries `Idempotency-Key`. Replays return the original result (§4.3).
 - **Streaming:** `GET /sessions/{id}/events?after={sequence}` over SSE. The client stores the last seen sequence; reconnect = same call with the new cursor. This one endpoint is the entire multi-device story (PRD R-SES-2/4): live tail and backfill are the same operation.
-- **Transactional outbox:** appending an event and recording its outbox entry happen in one DB transaction; SSE fan-out and projection updates consume the outbox. A commit can never succeed while its notification silently disappears — this is what makes "zero committed-event loss" (R-NFR-1) implementable rather than aspirational.
+- **Delivery vs durability:** the durable thing is the log commit, never the delivery — SSE fan-out and projections are consumers that can always re-read from the log. v-min delivers via in-process fan-out after commit (one process, no boundary to lose a message across). When delivery first crosses a process boundary (cluster), a **transactional outbox** slots in: appending an event and recording its outbox entry happen in one DB transaction, so a commit can never succeed while its notification silently disappears. Either way, "zero committed-event loss" (R-NFR-1) rests on the log, not the transport (see `components.md` §1 backing note).
 
 ## 4. Run coordination
 
@@ -128,7 +128,7 @@ One authoritative run mutates a project at a time (PRD R-RUN-2); reads and obser
 type Lease = { runId: string; workerId: string; generation: bigint; expiresAt: string };
 ```
 
-- A worker acquires the lease (transactionally, in Postgres) before touching a run, renews it while active, and every event append includes the lease generation.
+- A worker acquires the lease (transactionally, in the canonical store) before touching a run, renews it while active, and every event append includes the lease generation.
 - Appends with a superseded generation are **rejected at the store** — a stale worker that woke up after a GC pause or network partition cannot write, regardless of what it believes. Takeover is safe by construction, not by timing.
 - Lease expiry moves the run to `recovering` and makes it claimable. This is the entire crash-recovery protocol; there is no other path.
 
@@ -163,7 +163,7 @@ Implementations: local filesystem (Laptop), S3-compatible (Server/Cluster). Hold
 
 ### 5.3 Jobs and queues
 
-Postgres-backed job claims (transactional, `FOR UPDATE SKIP LOCKED`-style) for run dispatch — no broker dependency on any profile. A queue adapter seam exists for T3 scale, with one invariant: **the queue is never the only record that work exists.** The run row in Postgres is; the queue is delivery, not truth.
+DB-backed job claims in the canonical store (SQLite tables + in-process dispatch in v-min; Postgres with `FOR UPDATE SKIP LOCKED`-style claims at cluster) for run dispatch — no broker dependency on any profile. A queue adapter seam exists for T3 scale, with one invariant: **the queue is never the only record that work exists.** The run row in the canonical store is; the queue is delivery, not truth.
 
 ## 6. Model gateway
 
