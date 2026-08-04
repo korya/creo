@@ -71,12 +71,20 @@ type Gateway interface {
 }
 
 // Metered wraps a Gateway and records usage per run — even for failed calls.
+// Budget, when set, is the hard stop (R-LLM-5): checked before every call at
+// the one point no model traffic can bypass.
 type Metered struct {
-	Inner Gateway
-	DB    *store.DB
+	Inner  Gateway
+	DB     *store.DB
+	Budget func(ctx context.Context, runID string) error
 }
 
 func (m *Metered) Complete(ctx context.Context, runID string, req Request) (*Completion, error) {
+	if m.Budget != nil {
+		if err := m.Budget(ctx, runID); err != nil {
+			return nil, err
+		}
+	}
 	comp, err := m.Inner.Complete(ctx, req)
 	var usage Usage
 	modelName := ""

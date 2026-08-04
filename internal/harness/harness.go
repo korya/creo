@@ -8,6 +8,7 @@ package harness
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/korya/creo/internal/model"
 	"github.com/korya/creo/internal/project"
 	"github.com/korya/creo/internal/run"
+	"github.com/korya/creo/internal/tenant"
 	"github.com/korya/creo/internal/workspace"
 )
 
@@ -156,11 +158,16 @@ func (h *Harness) Execute(ctx context.Context, r *run.Run) (string, error) {
 }
 
 // EmitFailure records a plain-language failure event (best-effort; a stale
-// lease means the takeover worker owns the narrative now).
+// lease means the takeover worker owns the narrative now). Error translation
+// happens here, at emit time — clients render userText, never interpret.
 func (h *Harness) EmitFailure(ctx context.Context, r *run.Run, cause error) {
+	text := "Something went wrong while working on your site. Your project is safe — please try again."
+	if errors.Is(cause, tenant.ErrBudgetExceeded) {
+		text = "The AI budget for this account is used up for today. Your project is safe — try again tomorrow, or ask whoever runs this server to raise the limit."
+	}
 	h.Log.Append(ctx, r.SessionID, []eventlog.NewEvent{{
 		Type: EvRunFailed, RunID: r.ID,
-		UserText: "Something went wrong while working on your site. Your project is safe — please try again.",
+		UserText: text,
 		Detail:   map[string]string{"error": cause.Error()},
 	}}, &r.Lease)
 }

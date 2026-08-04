@@ -63,11 +63,28 @@ func New(db *store.DB) *Log {
 // the created events (with their ids and seqs) are returned and published to
 // live subscribers (SL-4).
 func (l *Log) Append(ctx context.Context, sessionID string, evs []NewEvent, lease *Lease) ([]Event, error) {
+	var appended []Event
+	err := l.db.Write(ctx, func(tx *sql.Tx) error {
+		var err error
+		appended, err = l.AppendTx(tx, sessionID, evs, lease)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	l.Publish(sessionID, appended)
+	return appended, nil
+}
+
+// AppendTx is Append inside a caller-owned transaction — used when an append
+// must be atomic with other writes (e.g. idempotency-keyed submit). The caller
+// must invoke Publish with the returned events after a successful commit.
+func (l *Log) AppendTx(tx *sql.Tx, sessionID string, evs []NewEvent, lease *Lease) ([]Event, error) {
 	if len(evs) == 0 {
 		return nil, errors.New("empty append")
 	}
 	var appended []Event
-	err := l.db.Write(ctx, func(tx *sql.Tx) error {
+	err := func() error {
 		if lease != nil {
 			var gen int64
 			var worker string
@@ -113,15 +130,16 @@ func (l *Log) Append(ctx context.Context, sessionID string, evs []NewEvent, leas
 			appended = append(appended, e)
 		}
 		return nil
-	})
+	}()
 	if err != nil {
 		return nil, err
 	}
-	l.publish(sessionID, appended)
 	return appended, nil
 }
 
-func (l *Log) publish(sessionID string, evs []Event) {
+// Publish fans events out to live subscribers. Callers of AppendTx invoke it
+// after their transaction commits; Append does it automatically.
+func (l *Log) Publish(sessionID string, evs []Event) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	for _, ch := range l.subs[sessionID] {

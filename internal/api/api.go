@@ -149,27 +149,38 @@ func (a *API) postMessage(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// submit is atomic: idempotency check, user.message append, and run
+// registration commit in one transaction (S6 — closes the M0 race). Publish
+// and worker wake-up happen after commit.
 func (a *API) submit(ctx context.Context, sessionID, projectID, idemKey, text string) (run.RunRef, bool, error) {
-	// Fast path: a seen key returns the original run without appending anything.
-	var existing string
-	err := a.db.R.QueryRowContext(ctx,
-		`SELECT run_id FROM idempotency_keys WHERE session_id = ? AND key = ?`, sessionID, idemKey).Scan(&existing)
-	if err == nil {
-		return run.RunRef{RunID: existing, Deduped: true}, false, nil
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return run.RunRef{}, false, err
-	}
-	// Two concurrent first submissions of the same key can both reach here:
-	// RequestRun (RC-1) still guarantees a single run — the loser merely leaves
-	// a duplicate user.message event. Cosmetic; a combined-transaction submit
-	// closes it in M1.
-	evs, err := a.log.Append(ctx, sessionID, []eventlog.NewEvent{{Type: harness.EvUserMessage, UserText: text}}, nil)
+	var ref run.RunRef
+	var appended []eventlog.Event
+	err := a.db.Write(ctx, func(tx *sql.Tx) error {
+		var existing string
+		err := tx.QueryRow(
+			`SELECT run_id FROM idempotency_keys WHERE session_id = ? AND key = ?`, sessionID, idemKey).Scan(&existing)
+		if err == nil {
+			ref = run.RunRef{RunID: existing, Deduped: true}
+			return nil
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		appended, err = a.log.AppendTx(tx, sessionID, []eventlog.NewEvent{{Type: harness.EvUserMessage, UserText: text}}, nil)
+		if err != nil {
+			return err
+		}
+		ref, err = a.coord.RequestRunTx(tx, sessionID, projectID, appended[0].ID, idemKey)
+		return err
+	})
 	if err != nil {
 		return run.RunRef{}, false, err
 	}
-	ref, err := a.coord.RequestRun(ctx, sessionID, projectID, evs[0].ID, idemKey)
-	return ref, true, err
+	if len(appended) > 0 {
+		a.log.Publish(sessionID, appended)
+		a.coord.Poke()
+	}
+	return ref, len(appended) > 0, nil
 }
 
 func (a *API) getRun(w http.ResponseWriter, r *http.Request) {

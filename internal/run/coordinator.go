@@ -61,7 +61,9 @@ func New(db *store.DB, leaseTTL time.Duration) *Coordinator {
 // Wake returns a channel that receives a signal when new work may be available.
 func (c *Coordinator) Wake() <-chan struct{} { return c.wake }
 
-func (c *Coordinator) poke() {
+// Poke nudges idle workers. Exposed for callers of RequestRunTx, who must
+// poke after their transaction commits.
+func (c *Coordinator) Poke() {
 	select {
 	case c.wake <- struct{}{}:
 	default:
@@ -73,36 +75,42 @@ func (c *Coordinator) poke() {
 func (c *Coordinator) RequestRun(ctx context.Context, sessionID, projectID, triggerEventID, idempotencyKey string) (RunRef, error) {
 	var ref RunRef
 	err := c.db.Write(ctx, func(tx *sql.Tx) error {
-		var existing string
-		err := tx.QueryRow(`SELECT run_id FROM idempotency_keys WHERE session_id = ? AND key = ?`, sessionID, idempotencyKey).Scan(&existing)
-		if err == nil {
-			ref = RunRef{RunID: existing, Deduped: true}
-			return nil
-		}
-		if !errors.Is(err, sql.ErrNoRows) {
-			return err
-		}
-		now := time.Now().UTC().Format(time.RFC3339Nano)
-		id := "run_" + ulid.Make().String()
-		if _, err := tx.Exec(
-			`INSERT INTO runs (id, session_id, project_id, trigger_event_id, status, created_at, updated_at) VALUES (?,?,?,?,?,?,?)`,
-			id, sessionID, projectID, triggerEventID, StatusQueued, now, now,
-		); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(
-			`INSERT INTO idempotency_keys (session_id, key, run_id, created_at) VALUES (?,?,?,?)`,
-			sessionID, idempotencyKey, id, now,
-		); err != nil {
-			return err
-		}
-		ref = RunRef{RunID: id}
-		return nil
+		var err error
+		ref, err = c.RequestRunTx(tx, sessionID, projectID, triggerEventID, idempotencyKey)
+		return err
 	})
 	if err == nil && !ref.Deduped {
-		c.poke()
+		c.Poke()
 	}
 	return ref, err
+}
+
+// RequestRunTx is RequestRun inside a caller-owned transaction, so a submit
+// (event append + run registration + idempotency key) commits atomically.
+func (c *Coordinator) RequestRunTx(tx *sql.Tx, sessionID, projectID, triggerEventID, idempotencyKey string) (RunRef, error) {
+	var existing string
+	err := tx.QueryRow(`SELECT run_id FROM idempotency_keys WHERE session_id = ? AND key = ?`, sessionID, idempotencyKey).Scan(&existing)
+	if err == nil {
+		return RunRef{RunID: existing, Deduped: true}, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return RunRef{}, err
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	id := "run_" + ulid.Make().String()
+	if _, err := tx.Exec(
+		`INSERT INTO runs (id, session_id, project_id, trigger_event_id, status, created_at, updated_at) VALUES (?,?,?,?,?,?,?)`,
+		id, sessionID, projectID, triggerEventID, StatusQueued, now, now,
+	); err != nil {
+		return RunRef{}, err
+	}
+	if _, err := tx.Exec(
+		`INSERT INTO idempotency_keys (session_id, key, run_id, created_at) VALUES (?,?,?,?)`,
+		sessionID, idempotencyKey, id, now,
+	); err != nil {
+		return RunRef{}, err
+	}
+	return RunRef{RunID: id}, nil
 }
 
 // Claim hands one claimable run to a worker. RC-2: never while another run of
@@ -113,17 +121,27 @@ func (c *Coordinator) Claim(ctx context.Context, workerID string) (*Run, error) 
 	err := c.db.Write(ctx, func(tx *sql.Tx) error {
 		now := time.Now().UTC()
 		nowStr := now.Format(time.RFC3339Nano)
+		// RC-2 per project, plus the M1 per-tenant concurrency quota: a run is
+		// claimable only while its tenant is below max_concurrent_runs.
 		row := tx.QueryRow(`
 			SELECT r.id, r.session_id, r.project_id, r.trigger_event_id, r.status, r.lease_gen
 			FROM runs r
+			JOIN projects p ON p.id = r.project_id
+			JOIN tenants t ON t.id = p.tenant_id
 			WHERE r.status IN (?, ?)
 			  AND NOT EXISTS (
 			    SELECT 1 FROM runs o
 			    WHERE o.project_id = r.project_id AND o.id != r.id
 			      AND o.status = ? AND o.lease_expires_at > ?
 			  )
+			  AND (
+			    SELECT COUNT(*) FROM runs o2
+			    JOIN projects p2 ON p2.id = o2.project_id
+			    WHERE p2.tenant_id = p.tenant_id
+			      AND o2.status = ? AND o2.lease_expires_at > ?
+			  ) < t.max_concurrent_runs
 			ORDER BY r.created_at
-			LIMIT 1`, StatusQueued, StatusRecovering, StatusRunning, nowStr)
+			LIMIT 1`, StatusQueued, StatusRecovering, StatusRunning, nowStr, StatusRunning, nowStr)
 		var r Run
 		var gen int64
 		if err := row.Scan(&r.ID, &r.SessionID, &r.ProjectID, &r.TriggerEventID, &r.Status, &gen); err != nil {
@@ -188,7 +206,7 @@ func (c *Coordinator) Complete(ctx context.Context, lease eventlog.Lease, status
 		return nil
 	})
 	if err == nil {
-		c.poke() // the project may have queued runs waiting on RC-2
+		c.Poke() // the project may have queued runs waiting on RC-2
 	}
 	return err
 }
@@ -209,7 +227,7 @@ func (c *Coordinator) RecoverOrphans(ctx context.Context) (int64, error) {
 		return nil
 	})
 	if err == nil && n > 0 {
-		c.poke()
+		c.Poke()
 	}
 	return n, err
 }
