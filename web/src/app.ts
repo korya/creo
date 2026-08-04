@@ -66,6 +66,15 @@ function addMessage(kind: "you" | "creo" | "note", text: string) {
   log.scrollTop = log.scrollHeight;
 }
 
+// Fire-and-forget entry points (bootstrap, screen switches) can reject after the
+// call site has returned; without this their failure would vanish as an unhandled
+// rejection and the user would just see a frozen screen. `void` is used instead
+// wherever the callee provably handles its own errors.
+function reportFailure(err: unknown) {
+  console.error("Creo:", err);
+  addMessage("note", "Something went wrong. Please refresh the page and try again.");
+}
+
 // The build card is a single, self-replacing checklist — live progress, never
 // part of the saved transcript. Distinct phrases from tool.result become steps;
 // earlier steps show a check, the newest is active.
@@ -78,7 +87,7 @@ function renderBuild() {
     card.id = "build-card";
     card.innerHTML =
       '<div class="head"><span class="dots"><span></span><span></span><span></span></span>' +
-      "<span>Building your site</span></div><div id=\"build-steps\"></div>";
+      '<span>Building your site</span></div><div id="build-steps"></div>';
     log.appendChild(card);
   } else {
     log.appendChild(card); // move to bottom
@@ -182,7 +191,7 @@ function handleEvent(e: Event) {
       break;
     case "preview.ready":
     case "artifact.version.created":
-      refreshPreview();
+      void refreshPreview();
       break;
     case "publish.completed":
     case "publish.rolled_back":
@@ -191,7 +200,7 @@ function handleEvent(e: Event) {
   }
   if (e.type === "run.completed" || e.type === "run.failed") {
     setBuilding(false);
-    refreshPreview();
+    void refreshPreview();
   }
 }
 
@@ -221,7 +230,7 @@ function resetWorkspace(title: string) {
   const log = $("log");
   if (log) {
     log.innerHTML =
-      '<div class="msg creo">Tell me about the website you\'d like — what it\'s for, ' +
+      "<div class=\"msg creo\">Tell me about the website you'd like — what it's for, " +
       "who it's for, and any details you have.</div>";
   }
   $("chips")?.classList.remove("hidden");
@@ -247,7 +256,7 @@ async function openProject(p: Project) {
     /* fresh session, nothing to replay */
   }
   subscribe();
-  refreshPreview();
+  void refreshPreview();
 }
 
 async function newProject() {
@@ -300,7 +309,10 @@ function renderHome(projects: Project[]) {
 }
 
 function escapeHtml(s: string): string {
-  return s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
+  return s.replace(
+    /[&<>"]/g,
+    (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!,
+  );
 }
 
 // ---------------------------------------------------------------- composer
@@ -330,7 +342,11 @@ async function send() {
 // ---------------------------------------------------------------- publish
 function openPublishModal() {
   if (!state.hasVersion) return;
-  const slug = state.siteTitle.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "your-site";
+  const slug =
+    state.siteTitle
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-|-$/g, "") || "your-site";
   const hero = $("publish-hero");
   if (hero) {
     hero.textContent = state.siteTitle;
@@ -344,7 +360,9 @@ function openPublishModal() {
   const go = $("publish-go");
   if (already) {
     if (title) title.textContent = "Publish your latest changes?";
-    if (body) body.textContent = "Your site is already online — this will update it with everything you've changed since.";
+    if (body)
+      body.textContent =
+        "Your site is already online — this will update it with everything you've changed since.";
     if (go) go.textContent = "Yes, update my site";
   } else {
     if (title) title.textContent = "Put your site online?";
@@ -413,7 +431,8 @@ async function openHistory() {
     /* none yet */
   }
   if (versions.length === 0) {
-    list.innerHTML = '<div class="empty">Your first version will appear here once building finishes.</div>';
+    list.innerHTML =
+      '<div class="empty">Your first version will appear here once building finishes.</div>';
     return;
   }
   list.innerHTML = "";
@@ -437,7 +456,12 @@ async function openHistory() {
 function friendlyTime(iso: string): string {
   const d = new Date(iso);
   if (isNaN(d.getTime())) return "recently";
-  return d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  return d.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
 }
 
 // ---------------------------------------------------------------- bootstrap
@@ -506,7 +530,7 @@ export function init() {
     const k = ev as KeyboardEvent;
     if (k.key === "Enter" && !k.shiftKey) {
       ev.preventDefault();
-      send();
+      void send();
     }
   });
   for (const chip of Array.from(document.querySelectorAll<HTMLElement>("#chips .chip"))) {
@@ -514,7 +538,7 @@ export function init() {
       const input = $<HTMLTextAreaElement>("input");
       if (input) {
         input.value = chip.textContent || "";
-        send();
+        void send();
       }
     });
   }
@@ -525,7 +549,7 @@ export function init() {
     localStorage.removeItem("creo_session");
     state.projectId = "";
     state.sessionId = "";
-    loadHome();
+    loadHome().catch(reportFailure);
   });
   $("ws-publish")?.addEventListener("click", openPublishModal);
   $("ws-history")?.addEventListener("click", openHistory);
@@ -547,7 +571,7 @@ export function init() {
     }
   });
 
-  bootstrap();
+  bootstrap().catch(reportFailure);
 }
 
 // Wire up on load (skipped under test, which imports functions directly).
