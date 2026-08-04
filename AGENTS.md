@@ -33,6 +33,22 @@ scripts/             demo and operational scripts
 
 ## Canonical commands
 
+`justfile` is the task runner — `just` on its own lists every recipe. It wraps
+the raw commands below rather than replacing them, so a checkout without `just`
+still works.
+
+```sh
+just run                     # serve locally on :8080 (fake model, no API key)
+just run anthropic:claude-sonnet-5   # real model; sources .env for the API key
+just check                   # format + lint + tidy, FIXING in place
+just check-ci                # the same checks, verify-only — never writes
+just check-go / just check-ts        # one side only
+```
+
+`check` fixes, `check-ci` reports. `check-go-ci` snapshots and restores
+`go.mod`/`go.sum` around its `go mod tidy` probe (tidy has no `--check` mode and
+always writes), so it is safe on a dirty tree and independent of git state.
+
 ```sh
 go build ./cmd/creo          # build the binary
 go test ./...                # full suite, including e2e (spawns the binary)
@@ -40,9 +56,9 @@ go test ./... -short         # skips subprocess tests
 go vet ./... && gofmt -l .   # both must be clean before committing
 ```
 
-Run locally: `./creo serve --data ./data --model fake:site` (no API key), or
-`--model anthropic:claude-sonnet-5` with `ANTHROPIC_API_KEY` set (repo-root
-`.env` is gitignored; `set -a; source .env` before serving).
+Run locally without `just`: `./creo serve --data ./data --model fake:site` (no
+API key), or `--model anthropic:claude-sonnet-5` with `ANTHROPIC_API_KEY` set
+(repo-root `.env` is gitignored; `set -a; source .env` before serving).
 
 ## Conventions
 
