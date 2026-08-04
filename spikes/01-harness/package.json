@@ -1,0 +1,13 @@
+{
+  "name": "spike-01-harness",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "run": "node --env-file=../../.env runner.mjs"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.110.0",
+    "cheerio": "^1.0.0",
+    "playwright": "^1.49.0"
+  }
+}

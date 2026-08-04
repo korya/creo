@@ -1,0 +1,66 @@
+[
+  {
+    "id": 1,
+    "type": "create",
+    "prompt": "I run a small bakery in Haarlem called Kastanja. I need a website with a home page, an about page, and a contact page. Home should have a big welcoming intro, a short menu teaser (croissants, sourdough, kastanje cake), a small photo gallery section, a services section (custom cakes, catering, workshops), and our opening hours (Tue-Sat 8:00-17:00). Contact page: address Grote Houtstraat 12, Haarlem, phone 023-1234567. Warm and handmade feel. Use local SVG placeholders you create yourself for all images."
+  },
+  {
+    "id": 2,
+    "type": "content",
+    "prompt": "We're now open on Sundays too, 9:00-14:00. Update the opening hours.",
+    "deterministic": { "keyPattern": "hour", "text": "Tue-Sat 8:00-17:00 · Sun 9:00-14:00" }
+  },
+  {
+    "id": 3,
+    "type": "content",
+    "prompt": "Use a different picture for the big photo at the top of the home page - create a new placeholder assets/hero2.svg (a warm illustration of bread on a table) and use that.",
+    "deterministic": { "keyPattern": "hero.*(image|img|photo)|((image|img|photo).*hero)", "src": "assets/hero2.svg", "requiresFile": "assets/hero2.svg" }
+  },
+  {
+    "id": 4,
+    "type": "edit",
+    "prompt": "Add a customer testimonials section below the services section on the home page. Make up three short quotes from happy customers with first names."
+  },
+  {
+    "id": 5,
+    "type": "edit",
+    "prompt": "Actually, move the testimonials above the gallery."
+  },
+  {
+    "id": 6,
+    "type": "edit",
+    "prompt": "The whole site feels a bit corporate. Make it feel warmer and more handmade - like a real neighborhood bakery."
+  },
+  {
+    "id": 7,
+    "type": "edit",
+    "prompt": "Add a Menu page with our full menu: breads (sourdough, spelt, baguette), pastries (croissant, kastanje cake, apple turnover), and drinks (coffee, tea, fresh juice). Put it in the navigation on every page."
+  },
+  {
+    "id": 8,
+    "type": "click",
+    "clickPattern": "hero|heading|title",
+    "clickDescriptionA": "the big heading at the very top of the home page",
+    "prompt": "Make this smaller, it's shouting at people."
+  },
+  {
+    "id": 9,
+    "type": "edit",
+    "prompt": "I looked at the site on my phone and it looks cramped. Fix it."
+  },
+  {
+    "id": 10,
+    "type": "edit",
+    "prompt": "Remove the photo gallery section, it doesn't add much."
+  },
+  {
+    "id": 11,
+    "type": "edit",
+    "prompt": "Hmm no, put the gallery back like it was before."
+  },
+  {
+    "id": 12,
+    "type": "probe",
+    "prompt": "I want customers to be able to order bread on the website and pay online for pickup."
+  }
+]

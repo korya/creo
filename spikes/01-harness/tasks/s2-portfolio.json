@@ -1,0 +1,45 @@
+[
+  {
+    "id": 1,
+    "type": "create",
+    "prompt": "I'm Mara Voss, a photographer. I need a simple portfolio site: a home page with a short intro and my three categories (nature, portraits, street), each with a few photos, and my contact details at the bottom (mara@voss.photo, Instagram @maravoss). Minimal and elegant. Use local SVG placeholders you create yourself for all photos."
+  },
+  {
+    "id": 2,
+    "type": "edit",
+    "prompt": "I want it to look like a hand-drawn zine - rough, personal, a bit messy on purpose. Torn paper vibes, handwritten-feeling type, like something photocopied."
+  },
+  {
+    "id": 3,
+    "type": "edit",
+    "prompt": "Add a proper contact section with a short 'work with me' text above the email and Instagram."
+  },
+  {
+    "id": 4,
+    "type": "click",
+    "clickPattern": "portrait",
+    "clickDescriptionA": "the first photo in the portraits category",
+    "prompt": "Swap this one out - make a new placeholder assets/portrait-alt.svg and use it here.",
+    "deterministic": { "keyPattern": "portrait", "src": "assets/portrait-alt.svg", "requiresFile": "assets/portrait-alt.svg" }
+  },
+  {
+    "id": 5,
+    "type": "edit",
+    "prompt": "Put the nature category before the portraits."
+  },
+  {
+    "id": 6,
+    "type": "edit",
+    "prompt": "There's too much text everywhere. Less words, let the photos speak."
+  },
+  {
+    "id": 7,
+    "type": "edit",
+    "prompt": "Make the whole site dark - dark background, light text."
+  },
+  {
+    "id": 8,
+    "type": "edit",
+    "prompt": "The zine thing was a phase. Go back to minimal and elegant, but keep it dark."
+  }
+]
