@@ -180,9 +180,11 @@ interface BlobStore {
 **Used by:** API (asset upload — R-WEB-4: uploads go here, never "into the chat"), harness (via refs), export.
 **Backing:** filesystem in v-min; S3-compatible at scale; interface unchanged.
 
-## 8. PreviewGateway
+## 8. PreviewGateway — **implemented M2**
 
 **Responsibility.** Owns serving untrusted generated sites to browsers — preview and published — and the atomic publish/rollback pointer. Exists so the trust boundary between *the product* and *user-generated content* (origins, CSP, static-only) is enforced in exactly one place, and so publish is a first-class reversible act rather than a scripted file copy.
+
+**Implementation (`internal/serving` + `internal/publish`):** a second `http.Server` on `:8081` (origin-isolated from the API on `:8080`; zero `/v1` routes) streams a version's files straight from the content-addressed store — no workspace materialization on the read path — under a strict static-only CSP (`default-src 'self'; connect-src 'none'; object-src 'none'; …`). `publish`/`rollback` are single-statement pointer-table flips; rollback walks `versions.parent_id` (the restore primitive). Preview access is a per-project capability secret in the URL (T1 posture — real per-user auth and per-site origins arrive at T2, the same boundary the shared-origin concession expires at). Export streams a `zip` of a version.
 
 ```ts
 interface PreviewGateway {

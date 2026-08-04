@@ -8,13 +8,13 @@ AI agent builds and evolves projects on a server you control; any client (web,
 CLI, mobile) attaches to the same durable session and continues. This repo
 contains the open-source core (Go) and the product/architecture docs.
 
-**Status: M1 — tenancy & safety** (on top of the M0 spine). Durable
-event-sourced sessions, crash-safe run coordination, the agent harness, plus
-bearer-token auth, structural per-tenant isolation, hard daily token budgets,
-per-tenant run quotas, and a hostile-project containment test. The M0
-acceptance test still holds: SIGKILL the server mid-run, restart, the run
-resumes from the log and completes. No web UI or publishing yet — see `PRD.md`
-§9 (M2 publish → M3 websites vertical → M5 self-host release).
+**Status: M2 — artifacts & publish** (on the M0 spine + M1 tenancy). Durable
+event-sourced sessions, crash-safe run coordination, the agent harness,
+bearer-token auth with per-tenant isolation and budgets, plus preview URLs,
+one-command publish/rollback to a live site (origin-isolated, static-only CSP),
+and project export. The M0 acceptance test still holds: SIGKILL the server
+mid-run, restart, the run resumes and completes. No web UI yet — see `PRD.md`
+§9 (M3 websites vertical → M5 self-host release).
 
 ## Quickstart
 
@@ -22,10 +22,14 @@ resumes from the log and completes. No web UI or publishing yet — see `PRD.md`
 go build -o creo ./cmd/creo
 
 # dev loop — no token ceremony (loopback only):
-./creo serve --data ./data --model fake:site --insecure &
+./creo serve --data ./data --model fake:site --insecure &   # API :8080, sites :8081
 ./creo project new my-site            # prints project + session ids
 ./creo say  <SESSION_ID> "build me a site"
 ./creo watch <SESSION_ID>             # live event stream
+./creo preview <PROJECT_ID>           # preview URL for the latest version
+./creo publish <PROJECT_ID>           # -> live URL on :8081
+./creo rollback <PROJECT_ID>          # revert to the previous version
+./creo export  <PROJECT_ID> -o site.zip
 
 # with auth (production shape):
 ./creo serve --data ./data --model fake:site &

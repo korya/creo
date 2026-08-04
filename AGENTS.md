@@ -19,8 +19,10 @@ internal/project/    ProjectStore (CAS versions, materialize, lineage)
 internal/model/      ModelGateway: anthropic + fake adapters, usage metering, budget hook
 internal/harness/    AgentHarness loop + embedded websites-v0 profile
 internal/tenant/     IdentityService: tokens, per-tenant budget + run quota
+internal/publish/    live-version pointer + preview capability secret (atomic publish/rollback)
+internal/serving/    PreviewGateway read side: origin-isolated site serving on :8081, CSP
 internal/api/        HTTP + SSE API with bearer auth + tenant scoping (the only client surface)
-internal/server/     v-min process wiring: workers, renewal, recovery
+internal/server/     v-min process wiring: two http.Servers (API + serving), workers, renewal, recovery
 internal/e2e/        acceptance: kill-9-resume, dup submit, workspace loss, hostile containment, auth, budget
 spikes/              throwaway experiment code; never imported by the core
 scripts/             demo and operational scripts
