@@ -39,6 +39,31 @@ func TestValidatePaletteRefusesExecAtL0(t *testing.T) {
 	}
 }
 
+func TestProgressPhrase(t *testing.T) {
+	p := Websites()
+	cases := []struct{ tool, path, want string }{
+		{"write_file", "index.html", "Working on your home page"},
+		{"write_file", "about.html", "Working on your About page"},
+		{"write_file", "contact-us.html", "Working on your Contact Us page"},
+		{"write_file", "styles.css", "Working on the styling"},
+		{"write_file", "assets/hero.svg", "Working on the images"},
+		{"write_file", "photo.png", "Working on the images"},
+		{"delete_file", "old.html", "Removing a page"},
+		{"read_file", "index.html", ""}, // inspection: silent
+		{"list_files", "", ""},          // inspection: silent
+		{"bash", "whatever", ""},        // unknown: silent
+	}
+	for _, c := range cases {
+		if got := p.ProgressPhrase(c.tool, c.path); got != c.want {
+			t.Errorf("ProgressPhrase(%q,%q) = %q, want %q", c.tool, c.path, got, c.want)
+		}
+	}
+	// Never emit the capitalized canary a leak test keys on.
+	if strings.Contains(p.ProgressPhrase("write_file", "index.html"), "Home") {
+		t.Fatal("home-page phrase must not contain capital 'Home'")
+	}
+}
+
 func TestSiteLanguageSubstituted(t *testing.T) {
 	p := Websites()
 	p.SiteLanguage = "Dutch"

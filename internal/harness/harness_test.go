@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -116,6 +117,35 @@ func TestFullRun(t *testing.T) {
 	evs, _ := f.log.Read(ctx, "s1", 0, []string{EvRunCompleted})
 	if len(evs) != 1 || evs[0].UserText != text {
 		t.Fatalf("run.completed missing or wrong: %+v", evs)
+	}
+}
+
+// Progress: successful tool results carry a plain-language phrase for the UI,
+// while the run's semantics (reconstruct/model context) are unchanged.
+func TestToolResultsCarryProgress(t *testing.T) {
+	fake, _ := model.FakeScript("site")
+	f := setup(t, fake)
+	ctx := context.Background()
+	r := f.claimRun(t, "w1")
+	if _, err := f.h.Execute(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+	evs, _ := f.log.Read(ctx, "s1", 0, []string{EvToolResult})
+	if len(evs) == 0 {
+		t.Fatal("no tool.result events")
+	}
+	var phrased int
+	for _, e := range evs {
+		if e.UserText != "" {
+			phrased++
+			if strings.Contains(e.UserText, "Home") { // capital canary must never appear
+				t.Fatalf("progress phrase leaked capital 'Home': %q", e.UserText)
+			}
+		}
+	}
+	// fake:site writes index.html and style.css — both should be phrased.
+	if phrased < 2 {
+		t.Fatalf("expected >=2 phrased tool results, got %d of %d", phrased, len(evs))
 	}
 }
 

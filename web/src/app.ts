@@ -30,6 +30,27 @@ function setBuilding(b: boolean) {
   $<HTMLButtonElement>("send").disabled = b;
   $<HTMLButtonElement>("publish").disabled = b || !state.projectId;
   $("status").textContent = b ? "Creo is working…" : "Ready";
+  document.getElementById("preview-pane")?.classList.toggle("building", b);
+  if (!b) clearActivity();
+}
+
+// A single, self-replacing progress line (never appended to the transcript).
+// It shows the platform-authored phrase from tool.result events during a build.
+function showActivity(text: string) {
+  const log = $("log");
+  let el = document.getElementById("activity");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "activity";
+    el.className = "activity";
+    log.appendChild(el);
+  }
+  el.textContent = text;
+  log.scrollTop = log.scrollHeight;
+}
+
+function clearActivity() {
+  document.getElementById("activity")?.remove();
 }
 
 async function refreshPreview() {
@@ -47,7 +68,19 @@ function handleEvent(e: Event) {
   if (e.seq <= state.lastSeq) return;
   state.lastSeq = e.seq;
   switch (e.type) {
+    case "run.started":
+    case "run.resumed":
+      setBuilding(true);
+      showActivity("Getting started…");
+      break;
+    case "tool.result":
+      // Live, plain-language build progress (authored server-side).
+      if (e.userText) showActivity(e.userText + "…");
+      break;
     case "assistant.message":
+      // A working turn with commentary: surface it and keep the activity line.
+      if (e.userText) addMessage("creo", e.userText);
+      break;
     case "run.completed":
       if (e.userText) addMessage("creo", e.userText);
       break;
@@ -153,5 +186,5 @@ if (typeof document !== "undefined" && document.getElementById("send")) {
   init();
 }
 
-// exported for potential teardown / tests
-export { state, unsub };
+// exported for teardown / tests
+export { state, unsub, handleEvent };

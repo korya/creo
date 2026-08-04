@@ -111,9 +111,16 @@ func (h *Harness) Execute(ctx context.Context, r *run.Run) (string, error) {
 			var resultBlocks []model.Block
 			for _, call := range pending {
 				content, isErr := h.executeTool(ws, call)
+				// Plain-language progress for the user, authored by the profile
+				// (R-AGT-2). Only on success — failed/blocked tools stay silent.
+				var progress string
+				if !isErr {
+					progress = h.Profile.ProgressPhrase(call.ToolName, toolPath(call))
+				}
 				resultEvents = append(resultEvents, eventlog.NewEvent{
-					Type:  EvToolResult,
-					RunID: r.ID,
+					Type:     EvToolResult,
+					RunID:    r.ID,
+					UserText: progress,
 					Detail: toolResultDetail{
 						ToolID: call.ToolID, ToolName: call.ToolName, Content: content, IsError: isErr,
 					},
@@ -181,6 +188,18 @@ func (h *Harness) EmitFailure(ctx context.Context, r *run.Run, cause error) {
 		UserText: text,
 		Detail:   map[string]string{"error": cause.Error()},
 	}}, &r.Lease)
+}
+
+// toolPath extracts the "path" argument from a tool call (for progress phrasing).
+func toolPath(call model.Block) string {
+	if len(call.ToolInput) == 0 {
+		return ""
+	}
+	var in struct {
+		Path string `json:"path"`
+	}
+	json.Unmarshal(call.ToolInput, &in)
+	return in.Path
 }
 
 func (h *Harness) executeTool(ws *workspace.Workspace, call model.Block) (string, bool) {

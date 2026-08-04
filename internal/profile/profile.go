@@ -54,6 +54,72 @@ func (p Profile) ValidatePalette() error {
 	return nil
 }
 
+// ProgressPhrase turns a tool action into a plain-language progress line for
+// the user (R-AGT-2: progress language is authored here, on the platform side —
+// the client renders it, never interprets file paths). Returns "" for actions
+// that shouldn't surface progress (inspection tools, unknown tools). Neutral
+// verbs so the phrasing fits both a first build and a later refine.
+func (p Profile) ProgressPhrase(toolName, path string) string {
+	switch toolName {
+	case "write_file":
+		return "Working on " + pageLabel(path)
+	case "delete_file":
+		return "Removing a page"
+	default: // read_file, list_files, anything else — not user-meaningful
+		return ""
+	}
+}
+
+// pageLabel describes a workspace path in the user's terms. Lowercase "home"
+// is deliberate — never emit the capitalized canary a leak test keys on.
+func pageLabel(path string) string {
+	clean := strings.TrimPrefix(path, "./")
+	lower := strings.ToLower(clean)
+	base := clean
+	if i := strings.LastIndex(base, "/"); i >= 0 {
+		base = base[i+1:]
+	}
+	switch {
+	case lower == "index.html" || strings.HasSuffix(lower, "/index.html"):
+		return "your home page"
+	case strings.HasSuffix(lower, ".css"):
+		return "the styling"
+	case strings.HasPrefix(lower, "assets/") || hasImageExt(lower):
+		return "the images"
+	case strings.HasSuffix(lower, ".html"):
+		stem := strings.TrimSuffix(base, ".html")
+		if i := strings.LastIndex(base, "."); i >= 0 { // handle .htm etc. defensively
+			stem = base[:i]
+		}
+		return "your " + prettyName(stem) + " page"
+	default:
+		return "your site"
+	}
+}
+
+func hasImageExt(p string) bool {
+	for _, ext := range []string{".svg", ".png", ".jpg", ".jpeg", ".webp", ".gif"} {
+		if strings.HasSuffix(p, ext) {
+			return true
+		}
+	}
+	return false
+}
+
+// prettyName turns a file stem into a title-cased label ("contact-us" -> "Contact Us").
+func prettyName(stem string) string {
+	stem = strings.ReplaceAll(stem, "-", " ")
+	stem = strings.ReplaceAll(stem, "_", " ")
+	fields := strings.Fields(stem)
+	for i, f := range fields {
+		fields[i] = strings.ToUpper(f[:1]) + f[1:]
+	}
+	if len(fields) == 0 {
+		return "new"
+	}
+	return strings.Join(fields, " ")
+}
+
 // SystemPrompt renders the profile's system prompt with the site language
 // substituted — the model is told the language, never left to infer it.
 func (p Profile) SystemPrompt() string {
