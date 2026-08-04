@@ -307,7 +307,7 @@ Same core, three supported shapes; each maps to a trust tier (§5.3):
 
 Sequenced to de-risk the two scariest claims first (durable resume; safe multi-tenant execution), then earn the vertical. Each milestone's demo is its acceptance gate; §10 maps criteria to milestones.
 
-- **M0 — Spine (core proof):** session store + harness + runs + one sandbox + Anthropic adapter + CLI client. Demo: start a session from the CLI, kill every process mid-run, resume from a second terminal, run completes; a duplicate submit creates no duplicate run.
+- **M0 — Spine (core proof):** session store + harness + runs + one sandbox + Anthropic adapter + CLI client. Demo: start a session from the CLI, kill every process mid-run, resume from a second terminal, run completes; a duplicate submit creates no duplicate run. **✅ DELIVERED 2026-08-04** — blueprint `docs/plans/m0-blueprint.md`; contracts SL-1..5 / RC-1..5 tested; acceptance demo performed live against Anthropic (SIGKILL mid-run → resume at gen 2 → completion) via `scripts/demo-m0.sh`.
 - **M1 — Tenancy & safety:** gateway, tenants/users/projects, sandbox hardening + egress policy, quotas + budget caps. Demo: two tenants, hostile prompt-injected project actively tries and fails to reach the other tenant, the host, and any credential.
 - **M2 — Artifacts & publish:** artifact versions, preview URLs, publish/rollback with built-in serving, export.
 - **M3 — Websites vertical alpha:** vertical profile + reference web client; the R-WEB-3 loop works for a friendly non-coder with a human on call.
