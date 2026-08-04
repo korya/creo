@@ -45,9 +45,10 @@ just check-ci                # the same checks, verify-only — never writes
 just check-go / just check-ts        # one side only
 ```
 
-`check` fixes, `check-ci` reports. `check-go-ci` snapshots and restores
-`go.mod`/`go.sum` around its `go mod tidy` probe (tidy has no `--check` mode and
-always writes), so it is safe on a dirty tree and independent of git state.
+`check` fixes, `check-ci` reports. The verify-only recipes never write: the
+module-graph probe is `go mod tidy -diff` (Go 1.23+), which prints what tidy
+would change and exits non-zero without touching `go.mod`/`go.sum` — so
+`check-ci` is safe on a dirty tree and independent of git state.
 
 ```sh
 go build ./cmd/creo          # build the binary

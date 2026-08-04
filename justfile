@@ -41,11 +41,9 @@ check-go:
 [doc("Go: verify only — fails if gofmt or go mod tidy would change anything")]
 check-go-ci:
     #!/usr/bin/env bash
-    # The tidy check is what stops go.mod's dependency graph drifting out of
-    # sync with what the code actually imports. `go mod tidy` has no --check
-    # mode and always writes, so snapshot both files, compare, and restore via
-    # a trap — this recipe must leave the tree exactly as it found it, and must
-    # not depend on git state (uncommitted go.mod edits are not a CI failure).
+    # `go mod tidy -diff` (Go 1.23+) prints what tidy would change and exits
+    # non-zero without touching go.mod/go.sum — so this stays verify-only and
+    # independent of git state (uncommitted go.mod edits are not a CI failure).
     set -euo pipefail
     unformatted="$(gofmt -l .)"
     if [ -n "$unformatted" ]; then
@@ -54,14 +52,7 @@ check-go-ci:
         exit 1
     fi
     go vet ./...
-    snapshot="$(mktemp -d)"
-    cp go.mod go.sum "$snapshot/"
-    trap 'cp "$snapshot/go.mod" "$snapshot/go.sum" . ; rm -rf "$snapshot"' EXIT
-    go mod tidy
-    if ! diff -q "$snapshot/go.mod" go.mod >/dev/null || ! diff -q "$snapshot/go.sum" go.sum >/dev/null; then
-        echo "go mod tidy would change go.mod/go.sum — run 'just check-go'" >&2
-        exit 1
-    fi
+    go mod tidy -diff
 
 [doc("TypeScript: format, lint, type-check via Vite+ — fixing in place")]
 check-ts:
