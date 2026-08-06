@@ -26,15 +26,40 @@ import (
 func DefaultProfile() profile.Profile { return profile.Websites() }
 
 const (
-	EvRunStarted     = "run.started"
-	EvRunResumed     = "run.resumed"
-	EvAssistant      = "assistant.message"
-	EvToolResult     = "tool.result"
-	EvVersionCreated = "artifact.version.created"
-	EvRunCompleted   = "run.completed"
-	EvRunFailed      = "run.failed"
-	EvUserMessage    = "user.message"
+	EvRunStarted      = "run.started"
+	EvRunResumed      = "run.resumed"
+	EvAssistant       = "assistant.message"
+	EvToolResult      = "tool.result"
+	EvVersionCreated  = "artifact.version.created"
+	EvRunCompleted    = "run.completed"
+	EvRunFailed       = "run.failed"
+	EvRunCancelled    = "run.cancelled"
+	EvUserMessage     = "user.message"
+	EvInputRequested  = "input.requested"
+	EvInputProvided   = "input.provided"
+	EvStateChanged    = "session.state.changed"
+	ToolAskUser       = "ask_user"
+	askOneAtATimeNote = "Only one question at a time — ask this again after the current one is answered."
 )
+
+// ErrAwaitingInput ends a run's turn without failing it: the agent asked the
+// user something. The caller parks the run (RunCoordinator.Await) and the
+// question waits in the log until any device answers it (AC-5).
+var ErrAwaitingInput = errors.New("awaiting user input")
+
+// InputRequestDetail is the payload of an input.requested event. Choices are a
+// convenience for the client; free text is always allowed.
+type InputRequestDetail struct {
+	ToolID   string   `json:"toolId"`
+	Question string   `json:"question"`
+	Choices  []string `json:"choices,omitempty"`
+}
+
+// InputProvidedDetail ties an answer back to the question's tool call, so a
+// resumed run sees an ordinary tool result rather than a dangling call.
+type InputProvidedDetail struct {
+	ToolID string `json:"toolId"`
+}
 
 type assistantDetail struct {
 	Blocks []model.Block `json:"blocks"`
@@ -74,9 +99,12 @@ func (h *Harness) Execute(ctx context.Context, r *run.Run) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	// A run is resuming iff it already announced a start. Keyed on the start
+	// event specifically, not on "any event mentioning this run" — lifecycle
+	// and state events also carry the run id, and must not fake a takeover.
 	startType := EvRunStarted
 	for _, e := range prior {
-		if e.RunID == r.ID {
+		if e.RunID == r.ID && (e.Type == EvRunStarted || e.Type == EvRunResumed) {
 			startType = EvRunResumed
 			break
 		}
@@ -109,7 +137,24 @@ func (h *Harness) Execute(ctx context.Context, r *run.Run) (string, error) {
 		if pending := pendingTools(msgs); len(pending) > 0 {
 			var resultEvents []eventlog.NewEvent
 			var resultBlocks []model.Block
+			var question *model.Block // the first ask_user, handled after the rest
 			for _, call := range pending {
+				if call.ToolName == ToolAskUser {
+					// One question at a time: the first parks the run; any extras
+					// get an ordinary tool result so no call dangles unanswered.
+					if question == nil {
+						question = &call
+						continue
+					}
+					resultEvents = append(resultEvents, eventlog.NewEvent{
+						Type: EvToolResult, RunID: r.ID,
+						Detail: toolResultDetail{ToolID: call.ToolID, ToolName: call.ToolName, Content: askOneAtATimeNote},
+					})
+					resultBlocks = append(resultBlocks, model.Block{
+						Type: model.BlockToolResult, ToolID: call.ToolID, Content: askOneAtATimeNote,
+					})
+					continue
+				}
 				content, isErr := h.executeTool(ws, call)
 				// Plain-language progress for the user, authored by the profile
 				// (R-AGT-2). Only on success — failed/blocked tools stay silent.
@@ -129,10 +174,23 @@ func (h *Harness) Execute(ctx context.Context, r *run.Run) (string, error) {
 					Type: model.BlockToolResult, ToolID: call.ToolID, Content: content, IsError: isErr,
 				})
 			}
-			if _, err := h.Log.Append(ctx, sessionID, resultEvents, lease); err != nil {
-				return "", err
+			if len(resultEvents) > 0 {
+				if _, err := h.Log.Append(ctx, sessionID, resultEvents, lease); err != nil {
+					return "", err
+				}
+				msgs = appendToolResults(msgs, resultBlocks)
 			}
-			msgs = appendToolResults(msgs, resultBlocks)
+			if question != nil {
+				// Commit the work done so far before parking: the user may take
+				// days to answer, and what the agent already built is theirs.
+				if err := h.commitProgress(ctx, r, ws); err != nil {
+					return "", err
+				}
+				if err := h.emitQuestion(ctx, r, lease, *question); err != nil {
+					return "", err
+				}
+				return "", ErrAwaitingInput
+			}
 			continue
 		}
 
@@ -182,6 +240,41 @@ func (h *Harness) Execute(ctx context.Context, r *run.Run) (string, error) {
 		return "", err
 	}
 	return finalText, nil
+}
+
+// emitQuestion records the agent's question. userText is the question itself,
+// verbatim — it was authored for a non-coder by the model under the profile's
+// instructions, and no client rewrites it (R-AGT-2).
+func (h *Harness) emitQuestion(ctx context.Context, r *run.Run, lease *eventlog.Lease, call model.Block) error {
+	var in struct {
+		Question string   `json:"question"`
+		Choices  []string `json:"choices"`
+	}
+	if len(call.ToolInput) > 0 {
+		json.Unmarshal(call.ToolInput, &in)
+	}
+	if strings.TrimSpace(in.Question) == "" {
+		in.Question = "Could you tell me a bit more about what you'd like?"
+	}
+	_, err := h.Log.Append(ctx, r.SessionID, []eventlog.NewEvent{{
+		Type: EvInputRequested, RunID: r.ID, UserText: in.Question,
+		Detail: InputRequestDetail{ToolID: call.ToolID, Question: in.Question, Choices: in.Choices},
+	}}, lease)
+	return err
+}
+
+// commitProgress snapshots the workspace mid-run, so a paused conversation
+// still leaves the user with everything built so far. Silent when the
+// workspace is unchanged — Commit is content-addressed.
+func (h *Harness) commitProgress(ctx context.Context, r *run.Run, ws *workspace.Workspace) error {
+	versionID, err := h.Projects.Commit(ctx, r.ProjectID, ws, r.TriggerEventID)
+	if err != nil {
+		return fmt.Errorf("version commit: %w", err)
+	}
+	_, err = h.Log.Append(ctx, r.SessionID, []eventlog.NewEvent{
+		{Type: EvVersionCreated, RunID: r.ID, Detail: map[string]string{"versionId": versionID}},
+	}, &r.Lease)
+	return err
 }
 
 // EmitFailure records a plain-language failure event (best-effort; a stale
@@ -278,6 +371,16 @@ func reconstruct(events []eventlog.Event) []model.Message {
 			if err := json.Unmarshal(e.Detail, &d); err == nil {
 				pendingResults = append(pendingResults, model.Block{
 					Type: model.BlockToolResult, ToolID: d.ToolID, ToolName: d.ToolName, Content: d.Content, IsError: d.IsError,
+				})
+			}
+		case EvInputProvided:
+			// The human's answer IS the ask_user tool's result. Pairing it here
+			// means a resumed run sees an ordinary completed tool call — the
+			// pause is invisible to the model, however long it lasted.
+			var d InputProvidedDetail
+			if err := json.Unmarshal(e.Detail, &d); err == nil && d.ToolID != "" {
+				pendingResults = append(pendingResults, model.Block{
+					Type: model.BlockToolResult, ToolID: d.ToolID, ToolName: ToolAskUser, Content: e.UserText,
 				})
 			}
 		}
