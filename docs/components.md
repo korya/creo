@@ -19,7 +19,7 @@
 | PreviewGateway | what is served | second port, static, CSP | separate origins/domains, CDN |
 | API layer | the contract with clients | HTTP + SSE in the binary | horizontally scaled gateway |
 | ProductProfile | what is allowed | embedded config | profile registry |
-| IdentityService | who is asking | bearer tokens, one implicit tenant | OIDC, orgs, SCIM later |
+| IdentityService | who is asking | bearer tokens + static human login | OIDC, orgs, SCIM later |
 | ToolBroker | privileged external ops | **dormant** (nothing at L0/L1 needs credentials) | credential-brokered operations |
 
 Types below are illustrative pseudo-TypeScript, not a language commitment.
@@ -233,13 +233,15 @@ interface ProductProfile {
 
 **Backing:** embedded config in v-min (the websites profile ships in the binary); a registry when third-party verticals exist.
 
-## 11. IdentityService (minimal) — **implemented M1**
+## 11. IdentityService — **tokens M1, human login M4**
 
 **Responsibility.** Owns *who is calling*. Tiny in v-min — token mint/verify/revoke plus per-tenant budget and quota queries — but exists from day one so every authorization decision has a subject. Retrofitting identity under a system that assumed "the one user" is a rewrite; carrying `tenant_id` on every row from the start is a column.
 
-**Surface (`internal/tenant`):** `Create`, `CreateToken` (plaintext shown once, SHA-256 at rest), `RevokeToken`, `Authenticate`, `CheckBudget` (daily token limit, UTC-midnight window — the R-LLM-5 hard stop, called from the ModelGateway), `TenantOfRun`. CLI: `creo tenant new|ls`, `creo token new|revoke` (local, operate on the data dir). Auth is mandatory on every `/v1` route; `serve --insecure` (loopback-only) maps to the default tenant for dev. Tokens are the tenant principal in M1; user objects arrive with the human-login surface (M4, deferral D1).
+**Surface (`internal/tenant`):** `Create`, `CreateToken` (plaintext shown once, SHA-256 at rest), `RevokeToken`, `Authenticate`, `CheckBudget` (daily token limit, UTC-midnight window — the R-LLM-5 hard stop, called from the ModelGateway), `TenantOfRun`. CLI: `creo tenant new|ls`, `creo token new|revoke` (local, operate on the data dir). Auth is mandatory on every `/v1` route; `serve --insecure` (loopback-only) maps to the default tenant for dev. Tokens remain the *programmatic* principal; human login arrived at M4 (below) and shares the same `Principal` type — two doors, one principal.
 
-### Human login design (decided 2026-08-04, resolves PRD open question #5)
+### Human login — **implemented M4** (`internal/identity`)
+
+Design decided 2026-08-04 (PRD open question #5); shipped at M4 as described here, with the `oidc` driver deferred to M5 (ledger D6).
 
 The pluggable part is **login, not tokens**. An `Authenticator` driver answers exactly one question — *which human just proved themselves* — as a discrete authentication event; the IdentityService (ours, fixed, not pluggable) then maps that to a local user row and mints a **Creo-native session/token**, identical in format regardless of driver. No external token ever flows past the login step; the rest of the platform sees exactly one principal artifact.
 

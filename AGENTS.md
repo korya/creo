@@ -18,7 +18,8 @@ internal/workspace/  L0 SandboxProvider (path-confined file tools, no exec)
 internal/project/    ProjectStore (CAS versions, materialize, lineage)
 internal/model/      ModelGateway: anthropic + fake adapters, usage metering, budget hook
 internal/harness/    AgentHarness loop + embedded websites-v0 profile
-internal/tenant/     IdentityService: tokens, per-tenant budget + run quota
+internal/tenant/     tenants: tokens, budget, run + storage quotas
+internal/identity/   human login: Authenticator seam, static driver, sessions
 internal/publish/    live-version pointer + preview capability secret (atomic publish/rollback)
 internal/serving/    PreviewGateway read side: origin-isolated site serving on :8081, CSP
 internal/profile/    ProductProfile: websites vertical as data (palette, exec level, CSP, language)
@@ -78,7 +79,17 @@ API key), or `--model anthropic:claude-sonnet-5` with `ANTHROPIC_API_KEY` set
   outside the log + versions + blobs. If a feature needs more, re-read
   `docs/components.md` §"one authority per component" before writing code.
 - **Plain-language userText** is authored at emit time in the harness — never
-  synthesized client-side.
+  synthesized client-side. The same bar applies to API error bodies: anything a
+  person can reach is a sentence, and unexpected failures go through
+  `serverError` (logs the cause, returns a sentence) rather than returning
+  `err.Error()`. `internal/e2e/language_test.go` enforces this — it reads what a
+  user would see on every reachable failure path and rejects jargon.
+- **Session state is named by the platform**, not inferred by clients:
+  `session.state.changed` events plus `GET /v1/sessions/{id}` (R-SES-5). A client
+  that decides for itself what `run.completed` means is a bug.
+- **Two doors, one principal.** `api.auth` resolves a bearer token, a session
+  cookie, or `--insecure` into one `identity.Principal`; handlers never learn
+  which. Policy branches on `Assurance`, never on the driver name.
 - **Ports:** API `127.0.0.1:8080`; `:8081` reserved for served sites (M2).
 - **Every `/v1` route is tenant-scoped.** New routes MUST resolve the caller's
   tenant (via the `auth` middleware) and scope their queries; a foreign or
