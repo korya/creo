@@ -45,7 +45,9 @@ func (b *browser) do(method, path string, body any, out any) int {
 		b.t.Fatal(err)
 	}
 	defer resp.Body.Close()
-	if out != nil && resp.StatusCode < 400 {
+	// Error bodies are decoded too: what the platform says when something goes
+	// wrong is exactly what the language tests need to read.
+	if out != nil {
 		json.NewDecoder(resp.Body).Decode(out)
 	}
 	return resp.StatusCode

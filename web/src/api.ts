@@ -72,15 +72,25 @@ export interface Principal {
 export class ApiError extends Error {
   constructor(
     readonly status: number,
-    message: string,
+    // The platform's own plain-language sentence (R-AGT-2). Kept apart from
+    // `message`, which carries the status for logs and must never be shown.
+    readonly userText: string,
   ) {
-    super(`${status}: ${message}`);
+    super(`${status}: ${userText}`);
     this.name = "ApiError";
   }
 }
 
 export function isUnauthorized(err: unknown): boolean {
   return err instanceof ApiError && err.status === 401;
+}
+
+// userMessage is the only thing that may be shown to a person. Errors carry a
+// class name and a status code in their string form; neither belongs on a
+// non-coder's screen, and a generic fallback beats leaking a stack trace.
+export function userMessage(err: unknown): string {
+  if (err instanceof ApiError && err.userText) return err.userText;
+  return "Something went wrong. Your site is safe — please try again.";
 }
 
 export class Api {
