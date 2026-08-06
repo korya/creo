@@ -93,19 +93,19 @@ func New(cfg Config) (*Server, error) {
 	}
 	gw, err := buildGateway(cfg.Model)
 	if err != nil {
-		db.Close()
+		_ = db.Close() // constructor is already failing; this is cleanup
 		return nil, err
 	}
 	elog := eventlog.New(db)
 	coord := run.New(db, cfg.LeaseTTL)
 	ps, err := project.New(db, filepath.Join(cfg.DataDir, "cas"))
 	if err != nil {
-		db.Close()
+		_ = db.Close() // constructor is already failing; this is cleanup
 		return nil, err
 	}
 	wp, err := workspace.NewProvider(filepath.Join(cfg.DataDir, "workspaces"))
 	if err != nil {
-		db.Close()
+		_ = db.Close() // constructor is already failing; this is cleanup
 		return nil, err
 	}
 	tenants := tenant.New(db)
@@ -140,11 +140,11 @@ func New(cfg Config) (*Server, error) {
 	// deployment and static login refuses to serve it ambiguously.
 	boundTenant, userCount, err := staticTenant(db)
 	if err != nil {
-		db.Close()
+		_ = db.Close() // constructor is already failing; this is cleanup
 		return nil, err
 	}
 	if err := checkExposure(cfg.Addr, userCount > 0, cfg.AllowUnsecured, net.InterfaceAddrs); err != nil {
-		db.Close()
+		_ = db.Close() // constructor is already failing; this is cleanup
 		return nil, err
 	}
 	unsecured := false
@@ -169,7 +169,7 @@ func New(cfg Config) (*Server, error) {
 	pub := publish.New(db)
 	web, err := webui.Handler(cfg.WebDir)
 	if err != nil {
-		db.Close()
+		_ = db.Close() // constructor is already failing; this is cleanup
 		return nil, err
 	}
 	s.http = &http.Server{
@@ -286,7 +286,12 @@ func (s *Server) Run(ctx context.Context) error {
 		for {
 			select {
 			case <-t.C:
-				s.coord.RecoverOrphans(ctx)
+				// Recovery is how abandoned runs come back (RC-5). If the scan
+				// keeps failing, runs quietly stop being rescued — silence
+				// would make that invisible.
+				if _, err := s.coord.RecoverOrphans(ctx); err != nil {
+					slog.Warn("recovery scan failed", "err", err)
+				}
 			case <-ctx.Done():
 				return
 			}
@@ -315,8 +320,10 @@ func (s *Server) Run(ctx context.Context) error {
 	case <-ctx.Done():
 		shutdownCtx, stop := context.WithTimeout(context.Background(), 3*time.Second)
 		defer stop()
-		s.http.Shutdown(shutdownCtx)
-		s.serving.Shutdown(shutdownCtx)
+		// Both listeners are closing on the way out; a shutdown error changes
+		// nothing we can act on, and the drain below is the part that matters.
+		_ = s.http.Shutdown(shutdownCtx)
+		_ = s.serving.Shutdown(shutdownCtx)
 		// Give workers a brief, bounded window to relinquish in-flight runs to
 		// the recoverable pool before the DB closes. This waits for the
 		// relinquish *write*, not the build — on timeout, runs are still
@@ -412,7 +419,11 @@ func (s *Server) executeRun(ctx context.Context, workerID string, r *run.Run) {
 			// Genuine failure.
 			slog.Warn("run failed", "run", r.ID, "err", err)
 			s.h.EmitFailure(context.WithoutCancel(ctx), r, err)
-			s.coord.Complete(context.WithoutCancel(ctx), r.Lease, run.StatusFailed, err.Error())
+			if e := s.coord.Complete(context.WithoutCancel(ctx), r.Lease, run.StatusFailed, err.Error()); e != nil {
+				// The run stays claimable until its lease expires, so this
+				// self-heals — but only recovery, not the user, will notice.
+				slog.Warn("could not mark the run failed", "run", r.ID, "err", e)
+			}
 			s.emitState(context.WithoutCancel(ctx), r, run.StatusFailed)
 		}
 		return

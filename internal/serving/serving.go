@@ -9,6 +9,7 @@ package serving
 
 import (
 	"io"
+	"log/slog"
 	"mime"
 	"net/http"
 	"path"
@@ -30,7 +31,7 @@ func New(projects *project.Store, pub *publish.Store, csp string) *Gateway {
 
 func (g *Gateway) Routes() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "ok") })
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { _, _ = io.WriteString(w, "ok") })
 	// {path...} matches the empty remainder too, so these also serve the
 	// directory root (which resolves to index.html in serveFile).
 	mux.HandleFunc("GET /preview/{project}/{secret}/{version}/{path...}", g.servePreview)
@@ -92,5 +93,10 @@ func (g *Gateway) serveFile(w http.ResponseWriter, r *http.Request, projectID, v
 	if ct := mime.TypeByExtension(path.Ext(reqPath)); ct != "" {
 		w.Header().Set("Content-Type", ct)
 	}
-	io.Copy(w, blob)
+	// Headers are already out, so a failure here cannot become a status code.
+	// It still matters: a read error means the content store is damaged, and a
+	// visitor just received a half-rendered page.
+	if _, err := io.Copy(w, blob); err != nil {
+		slog.Warn("serving a site file was cut short", "path", reqPath, "err", err)
+	}
 }
