@@ -28,6 +28,48 @@ export interface Version {
   createdAt: string;
 }
 
+export interface AccountChoice {
+  id: string;
+  name: string;
+  color?: string;
+}
+
+export interface LoginFlow {
+  flowId: string;
+  kind: "choice" | "redirect";
+  choices?: AccountChoice[];
+  redirectUrl?: string;
+}
+
+// Principal is what the platform reports about the caller, however they
+// authenticated. `assurance` — not the method name — is what the UI branches
+// on: "attributed" means the account was picked, not proven, and the family
+// -mode banner must be shown (components.md §11).
+export interface Principal {
+  userId?: string;
+  tenantId: string;
+  name?: string;
+  method: string;
+  assurance: "attributed" | "proven";
+}
+
+// ApiError carries the HTTP status as data. Callers branch on `status`, never
+// on message text — `String(err)` on an Error is prefixed with "Error: ", so
+// string sniffing silently never matches.
+export class ApiError extends Error {
+  constructor(
+    readonly status: number,
+    message: string,
+  ) {
+    super(`${status}: ${message}`);
+    this.name = "ApiError";
+  }
+}
+
+export function isUnauthorized(err: unknown): boolean {
+  return err instanceof ApiError && err.status === 401;
+}
+
 export class Api {
   constructor(
     private base = "",
@@ -57,6 +99,9 @@ export class Api {
     const res = await fetch(this.base + path, {
       method,
       headers: this.headers(extra),
+      // Session cookies are the human-login credential; same-origin keeps
+      // them flowing on every call including the SSE stream.
+      credentials: "same-origin",
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     if (!res.ok) {
@@ -66,9 +111,33 @@ export class Api {
       } catch {
         /* non-JSON error */
       }
-      throw new Error(`${res.status}: ${msg}`);
+      throw new ApiError(res.status, msg);
     }
     return res.json() as Promise<T>;
+  }
+
+  // --- human login (the static driver's picker; oidc redirects at M5) ---
+
+  beginLogin(): Promise<LoginFlow> {
+    return this.json<LoginFlow>("POST", "/v1/auth/login/begin", {});
+  }
+
+  completeLogin(flowId: string, accountId: string): Promise<Principal> {
+    return this.json<Principal>("POST", "/v1/auth/login/complete", {
+      flowId,
+      params: { account: accountId },
+    });
+  }
+
+  me(): Promise<Principal> {
+    return this.json<Principal>("GET", "/v1/auth/me");
+  }
+
+  async logout(): Promise<void> {
+    await fetch(this.base + "/v1/auth/logout", {
+      method: "POST",
+      credentials: "same-origin",
+    });
   }
 
   createProject(name: string): Promise<Project> {
@@ -121,13 +190,14 @@ export class Api {
     return this.json<Version[]>("GET", `/v1/projects/${projectId}/versions`);
   }
 
-  // Live tail over SSE. Returns an unsubscribe. EventSource can't send an
-  // Authorization header, so in authenticated mode the token rides as a query
-  // param; --insecure dev mode needs neither. (T1 posture; tightened at T2.)
+  // Live tail over SSE. Returns an unsubscribe. Browsers authenticated by
+  // cookie need nothing extra — a same-origin EventSource sends it. Only the
+  // operator token path needs the query param, since EventSource cannot set
+  // an Authorization header. (T1 posture; tightened at T2.)
   streamEvents(sessionId: string, after: number, onEvent: (e: Event) => void): () => void {
     let url = `${this.base}/v1/sessions/${sessionId}/events?after=${after}`;
     if (this.token) url += `&token=${encodeURIComponent(this.token)}`;
-    const es = new EventSource(url);
+    const es = new EventSource(url, { withCredentials: true });
     es.onmessage = (m) => {
       try {
         onEvent(JSON.parse(m.data) as Event);

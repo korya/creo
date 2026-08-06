@@ -3,7 +3,16 @@
 // it online — all through the public API (Api). Three screens (key / home /
 // workspace) share one event stream; the stream is the single source of truth
 // for the transcript, so messages survive reload and second-device resume.
-import { Api, type Event, type Project, type Version } from "./api";
+import {
+  Api,
+  ApiError,
+  isUnauthorized,
+  type Event,
+  type LoginFlow,
+  type Principal,
+  type Project,
+  type Version,
+} from "./api";
 
 const api = new Api("", localStorage.getItem("creo_token") ?? "");
 
@@ -19,6 +28,7 @@ interface State {
   hasVersion: boolean;
   publishedUrl: string;
   steps: string[]; // distinct build-progress phrases for the current run
+  who: Principal | null;
 }
 const state: State = {
   screen: "key",
@@ -30,8 +40,13 @@ const state: State = {
   hasVersion: false,
   publishedUrl: "",
   steps: [],
+  who: null,
 };
 let unsub: (() => void) | null = null;
+// The family-mode banner's dismissal deliberately lives here and nowhere else:
+// page memory, not sessionStorage — so it returns on every reload and in every
+// new tab. An honest warning you can permanently silence isn't one.
+let bannerDismissed = false;
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T | null;
 
@@ -50,6 +65,87 @@ function showScreen(name: Screen) {
   for (const s of ["key", "home", "workspace"] as Screen[]) {
     $(`screen-${s}`)?.classList.toggle("hidden", s !== name);
   }
+}
+
+// ---------------------------------------------------------------- who am I
+// The picker is the whole login: names, no secrets. Whether that is honest is
+// a property of the deployment, and the platform says so via `assurance` —
+// which is what the banner keys off, never the driver's name.
+let currentFlow: LoginFlow | null = null;
+
+async function showAccountPicker(): Promise<void> {
+  const list = $("account-list");
+  showScreen("key");
+  if (!list) return;
+  list.innerHTML = "";
+  try {
+    currentFlow = await api.beginLogin();
+  } catch {
+    currentFlow = null;
+  }
+  const choices = currentFlow?.choices ?? [];
+  if (choices.length === 0) {
+    list.innerHTML =
+      '<div id="account-empty">No one has been set up on this server yet. ' +
+      "Whoever runs it can add you with <code>creo account new</code>.</div>";
+    return;
+  }
+  for (const c of choices) {
+    const btn = document.createElement("button");
+    btn.className = "account";
+    btn.innerHTML =
+      `<span class="face" style="background:${c.color || heroColor(c.id)}">` +
+      `${escapeHtml((c.name[0] || "?").toUpperCase())}</span>` +
+      `<span>${escapeHtml(c.name)}</span>`;
+    btn.addEventListener("click", () => void pickAccount(c.id));
+    list.appendChild(btn);
+  }
+}
+
+async function pickAccount(accountId: string) {
+  if (!currentFlow) return;
+  try {
+    state.who = await api.completeLogin(currentFlow.flowId, accountId);
+    bannerDismissed = false; // a new sign-in re-earns the warning
+    $("key-error")?.classList.add("hidden");
+    if (!(await loadHome())) await showAccountPicker();
+  } catch (err) {
+    const el = $("key-error");
+    if (el) {
+      // 400 = the flow expired (a stale picker); anything else = can't sign in.
+      el.textContent =
+        err instanceof ApiError && err.status === 400
+          ? "That took a while — please pick your name again."
+          : "That account can't sign in right now.";
+      el.classList.remove("hidden");
+    }
+    await showAccountPicker();
+  }
+}
+
+// renderWho paints the signed-in identity and the family-mode banner. Called
+// on every entry to the home screen so a second device shows the truth too.
+function renderWho() {
+  const who = $("home-who");
+  if (who) {
+    who.textContent = state.who?.name ? `Signed in as ${state.who.name}` : "";
+    who.classList.toggle("hidden", !state.who?.name);
+  }
+  $("home-signout")?.classList.toggle("hidden", !state.who && !api.hasToken());
+
+  const banner = $("family-banner");
+  if (!banner) return;
+  const attributed = state.who?.assurance === "attributed";
+  const text = $("family-banner-text");
+  if (text) {
+    text.textContent = "Family mode — anyone who can reach this server can use these accounts.";
+  }
+  banner.classList.toggle("hidden", !attributed || bannerDismissed);
+}
+
+function dismissBanner() {
+  bannerDismissed = true;
+  $("family-banner")?.classList.add("hidden");
 }
 
 // ---------------------------------------------------------------- chat log
@@ -269,12 +365,19 @@ async function loadHome(): Promise<boolean> {
   try {
     projects = await api.listProjects();
   } catch (err) {
-    if (String(err).startsWith("401")) return false;
+    if (isUnauthorized(err)) return false; // not signed in — the caller shows sign-in
     projects = [];
+  }
+  if (!state.who) {
+    try {
+      state.who = await api.me();
+    } catch {
+      /* token mode on a server without identity, or a stale cookie */
+    }
   }
   renderHome(projects);
   showScreen("home");
-  $("home-signout")?.classList.toggle("hidden", !api.hasToken());
+  renderWho();
   return true;
 }
 
@@ -480,13 +583,19 @@ async function bootstrap() {
       localStorage.removeItem("creo_session");
     }
   }
-  // Otherwise land on the sites list — falling back to the key screen if the
-  // server wants authentication.
-  if (!(await loadHome())) showScreen("key");
+  // Otherwise land on the sites list — falling back to the picker if the
+  // server wants a signed-in human.
+  if (!(await loadHome())) await showAccountPicker();
 }
 
 export function init() {
-  // Site key screen
+  // Sign-in screen: the picker is the default; a token field is the operator
+  // escape hatch (and what the CLI/tests use).
+  $("key-operator")?.addEventListener("click", () => {
+    $("key-token")?.classList.remove("hidden");
+    $("key-operator")?.classList.add("hidden");
+    $<HTMLInputElement>("key-input")?.focus();
+  });
   $("key-go")?.addEventListener("click", async () => {
     const input = $<HTMLInputElement>("key-input");
     const key = input?.value.trim() ?? "";
@@ -496,32 +605,30 @@ export function init() {
     else {
       const err = $("key-error");
       if (err) {
-        err.textContent = "That key didn't open anything. Check it and try again.";
-        err.classList.remove("hidden");
-      }
-    }
-  });
-  $("key-skip")?.addEventListener("click", async () => {
-    api.setToken("");
-    localStorage.setItem("creo_token", "");
-    if (!(await loadHome())) {
-      const err = $("key-error");
-      if (err) {
-        err.textContent = "This server needs a site key.";
+        err.textContent = "That token didn't open anything. Check it and try again.";
         err.classList.remove("hidden");
       }
     }
   });
 
+  // Family-mode banner: hide for this page view only.
+  $("family-banner-close")?.addEventListener("click", dismissBanner);
+
   // Home screen
   $("home-empty-btn")?.addEventListener("click", () => newProject());
   $("home-empty-cta")?.addEventListener("click", () => newProject());
-  $("home-signout")?.addEventListener("click", () => {
+  $("home-signout")?.addEventListener("click", async () => {
     localStorage.removeItem("creo_token");
     localStorage.removeItem("creo_project");
     localStorage.removeItem("creo_session");
     api.setToken("");
-    showScreen("key");
+    state.who = null;
+    try {
+      await api.logout();
+    } catch {
+      /* already signed out */
+    }
+    await showAccountPicker();
   });
 
   // Workspace
@@ -580,4 +687,4 @@ if (typeof document !== "undefined" && document.getElementById("send")) {
 }
 
 // exported for teardown / tests
-export { state, unsub, handleEvent };
+export { state, unsub, handleEvent, renderWho, showAccountPicker, dismissBanner };
