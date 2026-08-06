@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -103,6 +104,15 @@ func FakeScript(name string) (*Fake, error) {
 		}
 		steps = append(steps, FakeStep{Text: "Your site is ready with all eight pages."})
 		return &Fake{ScriptName: name, Steps: steps, StepDelay: 150 * time.Millisecond}, nil
+	case "big-site":
+		// Writes ~2 MB in one page — enough to cross a 1 MB storage cap on the
+		// very first commit, so the quota path is exercised for real.
+		return &Fake{ScriptName: name, Steps: []FakeStep{
+			{Text: "Building a large site.", Tools: []FakeToolCall{
+				page("index.html", "<h1>Big</h1>"+strings.Repeat("<p>filler</p>", 160_000)),
+			}},
+			{Text: "Your site is ready."},
+		}}, nil
 	case "asking-site":
 		// Builds a page, asks the user one question, then finishes using the
 		// answer. Drives the waiting/resume choreography deterministically.

@@ -118,6 +118,7 @@ func cmdTenant(args []string) error {
 		name := rest[0]
 		daily := fs.Int64("daily-tokens", 0, "daily token budget (0 = unlimited)")
 		maxRuns := fs.Int64("max-runs", 2, "max concurrent runs")
+		maxStorageMB := fs.Int64("max-storage-mb", 0, "storage limit in MB (0 = unlimited)")
 		fs.Parse(rest[1:])
 		db, err := openData(*data)
 		if err != nil {
@@ -128,7 +129,12 @@ func cmdTenant(args []string) error {
 		if *daily > 0 {
 			limit = daily
 		}
-		t, err := tenant.New(db).Create(context.Background(), name, limit, *maxRuns)
+		var storage *int64
+		if *maxStorageMB > 0 {
+			bytes := *maxStorageMB << 20
+			storage = &bytes
+		}
+		t, err := tenant.New(db).Create(context.Background(), name, limit, *maxRuns, storage)
 		if err != nil {
 			return err
 		}
@@ -150,7 +156,11 @@ func cmdTenant(args []string) error {
 			if t.DailyTokenLimit != nil {
 				limit = fmt.Sprintf("%d/day", *t.DailyTokenLimit)
 			}
-			fmt.Printf("%s  %-16s  budget=%-12s  max-runs=%d\n", t.ID, t.Name, limit, t.MaxConcurrentRuns)
+			storage := "unlimited"
+			if t.MaxStorageBytes != nil {
+				storage = fmt.Sprintf("%dMB", *t.MaxStorageBytes>>20)
+			}
+			fmt.Printf("%s  %-16s  budget=%-12s  storage=%-10s  max-runs=%d\n", t.ID, t.Name, limit, storage, t.MaxConcurrentRuns)
 		}
 		return nil
 	default:

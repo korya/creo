@@ -32,9 +32,22 @@ type VersionMeta struct {
 	CreatedAt       time.Time `json:"createdAt"`
 }
 
+// Blob identifies one piece of content in a pending commit. Content-addressed,
+// so the same bytes appearing in ten versions is one blob.
+type Blob struct {
+	SHA  string
+	Size int64
+}
+
 type Store struct {
 	db     *store.DB
 	casDir string
+
+	// Quota, when set, vets a commit before any bytes are written. It receives
+	// the content-addressed manifest so the tenant layer can price the commit
+	// with dedup in mind; ProjectStore stays ignorant of tenants entirely
+	// (one authority per component).
+	Quota func(ctx context.Context, projectID string, blobs []Blob) error
 }
 
 func New(db *store.DB, casDir string) (*Store, error) {
@@ -57,6 +70,7 @@ func (s *Store) Commit(ctx context.Context, projectID string, ws *workspace.Work
 	}
 	var manifest []entry
 	var manifestLines []string
+	contents := make(map[string][]byte, len(files))
 	for _, path := range files {
 		content, err := ws.ReadFile(path)
 		if err != nil {
@@ -64,18 +78,34 @@ func (s *Store) Commit(ctx context.Context, projectID string, ws *workspace.Work
 		}
 		sum := sha256.Sum256(content)
 		sha := hex.EncodeToString(sum[:])
-		blob := filepath.Join(s.casDir, sha)
+		contents[sha] = content
+		manifest = append(manifest, entry{path, sha, len(content)})
+		manifestLines = append(manifestLines, fmt.Sprintf("%s\x00%s\x00%d", path, sha, len(content)))
+	}
+
+	// Vet before writing: a refused commit must leave nothing behind, or a
+	// tenant at their limit would keep growing the store on every attempt.
+	if s.Quota != nil {
+		blobs := make([]Blob, 0, len(manifest))
+		for _, e := range manifest {
+			blobs = append(blobs, Blob{SHA: e.sha, Size: int64(e.size)})
+		}
+		if err := s.Quota(ctx, projectID, blobs); err != nil {
+			return "", err
+		}
+	}
+
+	for _, e := range manifest {
+		blob := filepath.Join(s.casDir, e.sha)
 		if _, err := os.Stat(blob); errors.Is(err, os.ErrNotExist) {
 			tmp := blob + ".tmp"
-			if err := os.WriteFile(tmp, content, 0o644); err != nil {
+			if err := os.WriteFile(tmp, contents[e.sha], 0o644); err != nil {
 				return "", err
 			}
 			if err := os.Rename(tmp, blob); err != nil {
 				return "", err
 			}
 		}
-		manifest = append(manifest, entry{path, sha, len(content)})
-		manifestLines = append(manifestLines, fmt.Sprintf("%s\x00%s\x00%d", path, sha, len(content)))
 	}
 	sort.Strings(manifestLines)
 	manifestSum := sha256.Sum256([]byte(strings.Join(manifestLines, "\n")))
