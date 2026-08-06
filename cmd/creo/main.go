@@ -20,6 +20,7 @@ import (
 
 	"github.com/oklog/ulid/v2"
 
+	"github.com/korya/creo/internal/identity"
 	"github.com/korya/creo/internal/server"
 	"github.com/korya/creo/internal/store"
 	"github.com/korya/creo/internal/tenant"
@@ -52,6 +53,8 @@ func main() {
 		err = cmdTenant(os.Args[2:])
 	case "token":
 		err = cmdToken(os.Args[2:])
+	case "account":
+		err = cmdAccount(os.Args[2:])
 	default:
 		usage()
 		os.Exit(2)
@@ -66,19 +69,32 @@ func usage() {
 	fmt.Fprint(os.Stderr, `creo — self-hosted app building platform
 
 server:
-  creo serve   [--addr 127.0.0.1:8080] [--data ./data] [--model SPEC] [--insecure]
+  creo serve   [--addr 127.0.0.1:8080] [--data ./data] [--model SPEC] [--insecure] [--allow-unsecured]
 
 admin (local, operates on the data directory):
-  creo tenant new NAME [--daily-tokens N] [--max-runs N] [--data ./data]
+  creo tenant new NAME [--daily-tokens N] [--max-runs N] [--max-storage-mb N] [--data ./data]
   creo tenant ls                        [--data ./data]
   creo token new TENANT_ID [--name X]   [--data ./data]
   creo token revoke TOKEN_ID            [--data ./data]
+  creo account new NAME [--tenant ID] [--color HEX] [--data ./data]
+  creo account ls [--tenant ID]         [--data ./data]
+  creo account disable USER_ID          [--data ./data]
 
 client (HTTP; auth via --token or CREO_TOKEN):
   creo project new NAME | ls        [--server URL] [--token T]
   creo say SESSION_ID "message"     [--server URL] [--token T] [--key IDEMPOTENCY_KEY]
   creo watch SESSION_ID             [--server URL] [--token T] [--after N] [--all]
 `)
+}
+
+// openData opens the admin database, creating the data directory if this is
+// the first command run on a fresh install (`creo account new` before the
+// server has ever started is a normal first step).
+func openData(dir string) (*store.DB, error) {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, err
+	}
+	return store.Open(filepath.Join(dir, "creo.db"))
 }
 
 func cmdTenant(args []string) error {
@@ -97,7 +113,7 @@ func cmdTenant(args []string) error {
 		daily := fs.Int64("daily-tokens", 0, "daily token budget (0 = unlimited)")
 		maxRuns := fs.Int64("max-runs", 2, "max concurrent runs")
 		fs.Parse(rest[1:])
-		db, err := store.Open(filepath.Join(*data, "creo.db"))
+		db, err := openData(*data)
 		if err != nil {
 			return err
 		}
@@ -114,7 +130,7 @@ func cmdTenant(args []string) error {
 		return nil
 	case "ls":
 		fs.Parse(rest)
-		db, err := store.Open(filepath.Join(*data, "creo.db"))
+		db, err := openData(*data)
 		if err != nil {
 			return err
 		}
@@ -151,7 +167,7 @@ func cmdToken(args []string) error {
 		tenantID := rest[0]
 		name := fs.String("name", "cli", "token name")
 		fs.Parse(rest[1:])
-		db, err := store.Open(filepath.Join(*data, "creo.db"))
+		db, err := openData(*data)
 		if err != nil {
 			return err
 		}
@@ -169,7 +185,7 @@ func cmdToken(args []string) error {
 		}
 		tokenID := rest[0]
 		fs.Parse(rest[1:])
-		db, err := store.Open(filepath.Join(*data, "creo.db"))
+		db, err := openData(*data)
 		if err != nil {
 			return err
 		}
@@ -178,6 +194,75 @@ func cmdToken(args []string) error {
 			return err
 		}
 		fmt.Println("revoked", tokenID)
+		return nil
+	default:
+		return fmt.Errorf("unknown subcommand %q", sub)
+	}
+}
+
+// cmdAccount administers the static-login accounts (components.md §11): a few
+// manually precreated, mutually trusting humans — the permanent T1 answer.
+func cmdAccount(args []string) error {
+	if len(args) < 1 {
+		return fmt.Errorf("usage: creo account new NAME | ls | disable USER_ID")
+	}
+	sub, rest := args[0], args[1:]
+	fs := flag.NewFlagSet("account", flag.ExitOnError)
+	data := fs.String("data", "./data", "data directory")
+	tenantID := fs.String("tenant", "t_default", "owning tenant")
+	switch sub {
+	case "new":
+		if len(rest) < 1 {
+			return fmt.Errorf("usage: creo account new NAME")
+		}
+		name := rest[0]
+		color := fs.String("color", "", "display colour (hex)")
+		fs.Parse(rest[1:])
+		db, err := openData(*data)
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+		u, err := identity.CreateUser(context.Background(), db, *tenantID, name, *color)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("account %s  (%s)\n", u.ID, u.Name)
+		return nil
+	case "ls":
+		fs.Parse(rest)
+		db, err := openData(*data)
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+		users, err := identity.ListUsers(context.Background(), db, *tenantID)
+		if err != nil {
+			return err
+		}
+		for _, u := range users {
+			state := ""
+			if u.Disabled {
+				state = "  (disabled)"
+			}
+			fmt.Printf("%s  %-16s%s\n", u.ID, u.Name, state)
+		}
+		return nil
+	case "disable":
+		if len(rest) < 1 {
+			return fmt.Errorf("usage: creo account disable USER_ID")
+		}
+		userID := rest[0]
+		fs.Parse(rest[1:])
+		db, err := openData(*data)
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+		if err := identity.DisableUser(context.Background(), db, userID); err != nil {
+			return err
+		}
+		fmt.Println("disabled", userID, "(live sessions revoked)")
 		return nil
 	default:
 		return fmt.Errorf("unknown subcommand %q", sub)
@@ -195,11 +280,14 @@ func cmdServe(args []string) error {
 	leaseTTL := fs.Duration("lease-ttl", 15*time.Second, "run lease TTL")
 	insecure := fs.Bool("insecure", false, "map unauthenticated requests to t_default (loopback only, dev mode)")
 	webDir := fs.String("web-dir", "", "serve the web client from a directory instead of the embedded bundle (dev)")
+	allowUnsecured := fs.Bool("allow-unsecured", false,
+		"DANGEROUS: allow passwordless account login on a globally reachable address")
 	fs.Parse(args)
 
 	s, err := server.New(server.Config{
 		DataDir: *data, Addr: *addr, ServeAddr: *serveAddr, PublicURL: *publicURL,
 		Model: *modelSpec, Workers: *workers, LeaseTTL: *leaseTTL, Insecure: *insecure, WebDir: *webDir,
+		AllowUnsecured: *allowUnsecured,
 	})
 	if err != nil {
 		return err
