@@ -325,6 +325,7 @@ func (s *Server) executeRun(ctx context.Context, workerID string, r *run.Run) {
 	slog.Info("run claimed", "worker", workerID, "run", r.ID, "gen", r.Lease.Gen)
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	s.emitState(runCtx, r, run.StatusRunning)
 
 	// Renew the lease while the harness works; losing it aborts the run.
 	go func() {
@@ -349,8 +350,21 @@ func (s *Server) executeRun(ctx context.Context, workerID string, r *run.Run) {
 		// Classify by cancellation origin — a shutdown/lease-loss cancel is NOT
 		// a genuine failure and must not destroy recoverable work.
 		switch {
+		case errors.Is(err, harness.ErrAwaitingInput):
+			// The agent asked the user something. Park the run: the worker is
+			// released and the question waits in the log for any device.
+			if e := s.coord.Await(context.WithoutCancel(runCtx), r.Lease); e != nil {
+				slog.Warn("await failed", "run", r.ID, "err", e)
+			} else {
+				s.emitState(context.WithoutCancel(runCtx), r, run.StatusWaiting)
+				slog.Info("run waiting for input", "run", r.ID)
+			}
 		case errors.Is(err, eventlog.ErrStaleLease):
 			// Zombie after takeover — already fenced; write nothing.
+		case s.wasCancelled(r.ID):
+			// The user pressed stop. The cancel event was already recorded by
+			// the API; the worker just stands down.
+			slog.Info("run cancelled by user", "run", r.ID)
 		case ctx.Err() != nil:
 			// Graceful shutdown — leave the run recoverable so the next boot
 			// resumes it, exactly like the SIGKILL path.
@@ -366,11 +380,35 @@ func (s *Server) executeRun(ctx context.Context, workerID string, r *run.Run) {
 			slog.Warn("run failed", "run", r.ID, "err", err)
 			s.h.EmitFailure(context.WithoutCancel(ctx), r, err)
 			s.coord.Complete(context.WithoutCancel(ctx), r.Lease, run.StatusFailed, err.Error())
+			s.emitState(context.WithoutCancel(ctx), r, run.StatusFailed)
 		}
 		return
 	}
 	if err := s.coord.Complete(ctx, r.Lease, run.StatusCompleted, text); err != nil {
 		slog.Warn("complete failed", "run", r.ID, "err", err)
 	}
+	s.emitState(context.WithoutCancel(ctx), r, run.StatusCompleted)
 	slog.Info("run completed", "run", r.ID)
+}
+
+// emitState publishes the session's state as an explicit event (R-SES-5).
+// Clients render state from these; they never infer it from event patterns.
+// Emitted after the fenced transition it describes has already succeeded.
+func (s *Server) emitState(ctx context.Context, r *run.Run, status string) {
+	state := api.SessionStateFor(status)
+	evs, err := s.log.Append(ctx, r.SessionID, []eventlog.NewEvent{{
+		Type: harness.EvStateChanged, RunID: r.ID, Detail: map[string]string{"state": state},
+	}}, nil)
+	if err != nil {
+		slog.Warn("state event failed", "run", r.ID, "state", state, "err", err)
+		return
+	}
+	s.log.Publish(r.SessionID, evs)
+}
+
+// wasCancelled distinguishes a user's stop from a crash takeover: both abort
+// the worker by invalidating its lease, but only one of them is a decision.
+func (s *Server) wasCancelled(runID string) bool {
+	got, err := s.coord.Get(context.Background(), runID)
+	return err == nil && got.Status == run.StatusCancelled
 }

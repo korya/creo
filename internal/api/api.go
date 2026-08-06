@@ -92,13 +92,43 @@ func (a *API) Routes() http.Handler {
 	mux.Handle("GET /v1/projects/{id}/export", a.auth(a.exportProject))
 	mux.Handle("POST /v1/sessions/{id}/messages", a.auth(a.postMessage))
 	mux.Handle("GET /v1/sessions/{id}/events", a.auth(a.streamEvents))
+	mux.Handle("GET /v1/sessions/{id}", a.auth(a.getSession))
 	mux.Handle("GET /v1/runs/{id}", a.auth(a.getRun))
+	mux.Handle("POST /v1/runs/{id}/input", a.auth(a.answerRun))
+	mux.Handle("POST /v1/runs/{id}/cancel", a.auth(a.cancelRun))
 	// The web client app shell at / (and its static assets). Unauthenticated —
 	// it carries no tenant data; the client authenticates its own /v1 calls.
 	if a.Web != nil {
 		mux.Handle("/", a.Web)
 	}
 	return mux
+}
+
+// Session states clients render (R-SES-5). The platform names the state; the
+// client never infers one from event patterns.
+const (
+	StateIdle    = "idle"
+	StateQueued  = "queued"
+	StateWorking = "working"
+	StateWaiting = "waiting-for-input"
+	StateFailed  = "failed"
+)
+
+// SessionStateFor maps a run status to the state clients render. A finished
+// run leaves the session idle: the conversation is ready for the next thing.
+func SessionStateFor(runStatus string) string {
+	switch runStatus {
+	case run.StatusQueued, run.StatusRecovering:
+		return StateQueued
+	case run.StatusRunning:
+		return StateWorking
+	case run.StatusWaiting:
+		return StateWaiting
+	case run.StatusFailed:
+		return StateFailed
+	default: // completed, cancelled, or no run at all
+		return StateIdle
+	}
 }
 
 // --- human login (components.md §11: drivers claim, the service mints) ---
@@ -443,6 +473,21 @@ func (a *API) postMessage(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// A message typed while the agent is waiting on a question IS the answer.
+	// Without this the message would queue a second run that could never be
+	// claimed (RC-2 reserves the project for the parked conversation), and the
+	// user would watch their reply vanish.
+	if waitingID, toolID, ok := a.waitingRun(r.Context(), sessionID); ok {
+		if err := a.provideInput(r.Context(), sessionID, waitingID, toolID, body.Text, actor(r)); err != nil {
+			httpError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusAccepted, map[string]any{
+			"runId": waitingID, "deduped": false, "eventAppended": true, "answered": true,
+		})
+		return
+	}
+
 	ref, appended, err := a.submit(r.Context(), sessionID, projectID, idemKey, body.Text, actor(r))
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, err.Error())
@@ -472,7 +517,10 @@ func (a *API) submit(ctx context.Context, sessionID, projectID, idemKey, text, e
 		if !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
-		appended, err = a.Log.AppendTx(tx, sessionID, []eventlog.NewEvent{{Type: harness.EvUserMessage, UserText: text, Actor: eventActor}}, nil)
+		appended, err = a.Log.AppendTx(tx, sessionID, []eventlog.NewEvent{
+			{Type: harness.EvUserMessage, UserText: text, Actor: eventActor},
+			{Type: harness.EvStateChanged, Detail: map[string]string{"state": StateQueued}},
+		}, nil)
 		if err != nil {
 			return err
 		}
@@ -487,6 +535,140 @@ func (a *API) submit(ctx context.Context, sessionID, projectID, idemKey, text, e
 		a.Coord.Poke()
 	}
 	return ref, len(appended) > 0, nil
+}
+
+// waitingRun returns the session's run that is parked on a question, if any.
+func (a *API) waitingRun(ctx context.Context, sessionID string) (runID, toolID string, ok bool) {
+	err := a.DB.R.QueryRowContext(ctx,
+		`SELECT id FROM runs WHERE session_id = ? AND status = ? ORDER BY created_at DESC LIMIT 1`,
+		sessionID, run.StatusWaiting).Scan(&runID)
+	if err != nil {
+		return "", "", false
+	}
+	// The tool call the answer resolves: the newest unanswered question.
+	evs, err := a.Log.Read(ctx, sessionID, 0, []string{harness.EvInputRequested})
+	if err != nil || len(evs) == 0 {
+		return "", "", false
+	}
+	var d harness.InputRequestDetail
+	json.Unmarshal(evs[len(evs)-1].Detail, &d)
+	return runID, d.ToolID, true
+}
+
+// provideInput appends the answer and resumes the run. Shared by the explicit
+// answer route and by a plain message typed while a question is pending — to
+// the user those are the same act, so they must behave identically.
+func (a *API) provideInput(ctx context.Context, sessionID, runID, toolID, text, eventActor string) error {
+	evs, err := a.Log.Append(ctx, sessionID, []eventlog.NewEvent{
+		{
+			Type: harness.EvInputProvided, RunID: runID, UserText: text,
+			Detail: harness.InputProvidedDetail{ToolID: toolID}, Actor: eventActor,
+		},
+		{Type: harness.EvStateChanged, RunID: runID, Detail: map[string]string{"state": StateQueued}},
+	}, nil)
+	if err != nil {
+		return err
+	}
+	a.Log.Publish(sessionID, evs)
+	return a.Coord.Resume(ctx, runID)
+}
+
+func (a *API) answerRun(w http.ResponseWriter, r *http.Request) {
+	runID := r.PathValue("id")
+	got, err := a.Coord.Get(r.Context(), runID)
+	if errors.Is(err, run.ErrNotFound) {
+		httpError(w, http.StatusNotFound, "unknown run")
+		return
+	} else if err != nil {
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := a.ownsProject(r.Context(), tenantID(r), got.ProjectID); err != nil {
+		httpError(w, http.StatusNotFound, "unknown run")
+		return
+	}
+	var body struct {
+		Text string `json:"text"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Text) == "" {
+		httpError(w, http.StatusBadRequest, "body must be {\"text\": \"...\"}")
+		return
+	}
+	_, toolID, ok := a.waitingRun(r.Context(), got.SessionID)
+	if !ok || got.Status != run.StatusWaiting {
+		// Another device answered first, or the run moved on. Not an error the
+		// user caused — say so plainly (R-AGT-3).
+		httpError(w, http.StatusConflict, "That question was already answered.")
+		return
+	}
+	if err := a.provideInput(r.Context(), got.SessionID, runID, toolID, body.Text, actor(r)); err != nil {
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]string{"runId": runID})
+}
+
+// cancelRun stops the active run (R-RUN-4). The project keeps its last
+// committed version — cancelling undoes nothing already saved.
+func (a *API) cancelRun(w http.ResponseWriter, r *http.Request) {
+	runID := r.PathValue("id")
+	got, err := a.Coord.Get(r.Context(), runID)
+	if errors.Is(err, run.ErrNotFound) {
+		httpError(w, http.StatusNotFound, "unknown run")
+		return
+	} else if err != nil {
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := a.ownsProject(r.Context(), tenantID(r), got.ProjectID); err != nil {
+		httpError(w, http.StatusNotFound, "unknown run")
+		return
+	}
+	err = a.Coord.Cancel(r.Context(), runID)
+	if errors.Is(err, run.ErrTerminal) {
+		httpError(w, http.StatusConflict, "That was already finished.")
+		return
+	} else if err != nil {
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	// One event carries both the stop and the state change the clients render.
+	evs, err := a.Log.Append(r.Context(), got.SessionID, []eventlog.NewEvent{
+		{Type: harness.EvRunCancelled, RunID: runID, UserText: "Stopped. Your site is as it was before this change.", Actor: actor(r)},
+		{Type: harness.EvStateChanged, RunID: runID, Detail: map[string]string{"state": StateIdle}},
+	}, nil)
+	if err == nil {
+		a.Log.Publish(got.SessionID, evs)
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"runId": runID, "status": run.StatusCancelled})
+}
+
+// getSession reports the state a client should render on first paint, before
+// any events arrive (R-SES-5).
+func (a *API) getSession(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.PathValue("id")
+	if _, err := a.sessionProject(r.Context(), tenantID(r), sessionID); err != nil {
+		httpError(w, http.StatusNotFound, "unknown session")
+		return
+	}
+	out := map[string]any{"id": sessionID, "state": StateIdle}
+	var runID, status string
+	err := a.DB.R.QueryRowContext(r.Context(),
+		`SELECT id, status FROM runs WHERE session_id = ? ORDER BY created_at DESC LIMIT 1`, sessionID).Scan(&runID, &status)
+	if err == nil {
+		out["state"] = SessionStateFor(status)
+		out["runId"] = runID
+	}
+	// A pending question travels with the state, so a second device can render
+	// the choices immediately instead of replaying the log to find them.
+	if _, _, ok := a.waitingRun(r.Context(), sessionID); ok {
+		if evs, err := a.Log.Read(r.Context(), sessionID, 0, []string{harness.EvInputRequested}); err == nil && len(evs) > 0 {
+			var d harness.InputRequestDetail
+			json.Unmarshal(evs[len(evs)-1].Detail, &d)
+			out["question"] = map[string]any{"text": d.Question, "choices": d.Choices}
+		}
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (a *API) getRun(w http.ResponseWriter, r *http.Request) {

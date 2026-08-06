@@ -41,6 +41,10 @@ func main() {
 		err = cmdSay(os.Args[2:])
 	case "watch":
 		err = cmdWatch(os.Args[2:])
+	case "answer":
+		err = cmdRunAction(os.Args[2:], "input")
+	case "cancel":
+		err = cmdRunAction(os.Args[2:], "cancel")
 	case "publish":
 		err = cmdProjectAction(os.Args[2:], "publish")
 	case "rollback":
@@ -83,6 +87,8 @@ admin (local, operates on the data directory):
 client (HTTP; auth via --token or CREO_TOKEN):
   creo project new NAME | ls        [--server URL] [--token T]
   creo say SESSION_ID "message"     [--server URL] [--token T] [--key IDEMPOTENCY_KEY]
+  creo answer RUN_ID "reply"        [--server URL] [--token T]
+  creo cancel RUN_ID                [--server URL] [--token T]
   creo watch SESSION_ID             [--server URL] [--token T] [--after N] [--all]
 `)
 }
@@ -481,6 +487,40 @@ func cmdExport(args []string) error {
 		return err
 	}
 	fmt.Printf("wrote %s\n", *out)
+	return nil
+}
+
+// cmdRunAction handles answer (POST body) and cancel (no body) on a run.
+func cmdRunAction(args []string, action string) error {
+	fs := flag.NewFlagSet(action, flag.ExitOnError)
+	srv := serverFlag(fs)
+	tok := tokenFlag(fs)
+	need := 1
+	if action == "input" {
+		need = 2
+	}
+	if len(args) < need {
+		if action == "input" {
+			return fmt.Errorf("usage: creo answer RUN_ID \"reply\"")
+		}
+		return fmt.Errorf("usage: creo cancel RUN_ID")
+	}
+	runID := args[0]
+	var body any
+	if action == "input" {
+		body = map[string]string{"text": args[1]}
+		fs.Parse(args[2:])
+	} else {
+		fs.Parse(args[1:])
+	}
+	if err := call(http.MethodPost, *srv+"/v1/runs/"+runID+"/"+action, body, authHeaders(*tok, nil), nil); err != nil {
+		return err
+	}
+	if action == "input" {
+		fmt.Println("answered", runID)
+	} else {
+		fmt.Println("stopped", runID)
+	}
 	return nil
 }
 
