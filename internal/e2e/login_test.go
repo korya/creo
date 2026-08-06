@@ -6,6 +6,7 @@ import (
 	"net/http/cookiejar"
 	"strings"
 	"testing"
+	"time"
 )
 
 // A browser: cookie jar, no bearer token. This is the human path — everything
@@ -88,6 +89,48 @@ func (b *browser) signIn(name string) principal {
 	}
 	b.t.Fatalf("account %q not offered; picker had %+v", name, flow.Choices)
 	return principal{}
+}
+
+// say posts a message as this browser (cookie auth, no bearer token).
+func (b *browser) say(sessionID, text, key string) {
+	b.t.Helper()
+	req, _ := http.NewRequest("POST", b.e.url("/v1/sessions/"+sessionID+"/messages"),
+		strings.NewReader(`{"text":`+quote(text)+`}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", key)
+	resp, err := b.http.Do(req)
+	if err != nil {
+		b.t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 202 {
+		b.t.Fatalf("say: HTTP %d", resp.StatusCode)
+	}
+}
+
+func (b *browser) events(sessionID string) []event {
+	b.t.Helper()
+	var evs []event
+	b.do("GET", "/v1/sessions/"+sessionID+"/events?stream=false", nil, &evs)
+	return evs
+}
+
+func (b *browser) waitFor(sessionID string, timeout time.Duration, pred func([]event) bool) []event {
+	b.t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if evs := b.events(sessionID); pred(evs) {
+			return evs
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	b.t.Fatalf("condition not reached within %s", timeout)
+	return nil
+}
+
+func quote(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
 }
 
 // AC-4 groundwork + D1: a human signs in by tapping a name, works entirely on
