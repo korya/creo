@@ -144,9 +144,11 @@ func (e *env) call(method, path string, body any, headers map[string]string, out
 }
 
 type event struct {
-	Seq      int64  `json:"seq"`
-	Type     string `json:"type"`
-	UserText string `json:"userText"`
+	Seq      int64           `json:"seq"`
+	Type     string          `json:"type"`
+	UserText string          `json:"userText"`
+	Actor    string          `json:"actor"`
+	Detail   json.RawMessage `json:"detail"`
 }
 
 func (e *env) events(sessionID string) []event {
