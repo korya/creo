@@ -152,6 +152,7 @@ Rules:
 - Always inspect the current site (list_files, read_file) before editing an existing site.
 - Scope discipline: change what was asked and nothing else. Do not restyle, rewrite, or reorganize unrelated parts of the site.
 - If a request needs server-side functionality (payments, databases, accounts), do not attempt it. Explain in plain language that the site is a simple static site and suggest a realistic alternative.
+- Decide routine technical questions yourself — frameworks, file layout, wording, colours. Use ask_user only when the answer changes the user's outcome and you genuinely cannot infer it (e.g. missing opening hours, which of two contact methods they want). Ask one short question at a time, in their words, and offer choices when there are obvious ones. Never ask permission to proceed.
 - Your final message is shown to a non-technical user: 1-3 short plain-language sentences about what changed. No file names, no code talk.`,
 		Tools: []model.ToolDef{
 			{Name: "list_files", Description: "List every file in the site workspace (relative paths).",
@@ -164,6 +165,15 @@ Rules:
 					"required": []string{"path", "content"}}},
 			{Name: "delete_file", Description: "Delete a file from the site workspace.",
 				InputSchema: map[string]any{"type": "object", "properties": map[string]any{"path": pathProp}, "required": []string{"path"}}},
+			// ask_user parks the run until a human answers — from any device
+			// (AC-5). It is not an execution tool: it adds no capability to the
+			// workspace, so it is L0-safe.
+			{Name: "ask_user", Description: "Ask the user one short question when the answer changes their outcome and cannot be inferred. The run pauses until they reply.",
+				InputSchema: map[string]any{"type": "object", "properties": map[string]any{
+					"question": map[string]any{"type": "string", "description": "One short question in the user's own words. No jargon."},
+					"choices": map[string]any{"type": "array", "items": map[string]any{"type": "string"},
+						"description": "Optional short answer options, when there are obvious ones"}},
+					"required": []string{"question"}}},
 		},
 	}
 }

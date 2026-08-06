@@ -103,6 +103,29 @@ func FakeScript(name string) (*Fake, error) {
 		}
 		steps = append(steps, FakeStep{Text: "Your site is ready with all eight pages."})
 		return &Fake{ScriptName: name, Steps: steps, StepDelay: 150 * time.Millisecond}, nil
+	case "asking-site":
+		// Builds a page, asks the user one question, then finishes using the
+		// answer. Drives the waiting/resume choreography deterministically.
+		return &Fake{ScriptName: name, Steps: []FakeStep{
+			{Text: "Starting your site.", Tools: []FakeToolCall{page("index.html", "<h1>Bakery</h1>")}},
+			{Text: "", Tools: []FakeToolCall{{Name: "ask_user", Input: map[string]any{
+				"question": "What are your opening hours?",
+				"choices":  []any{"Weekdays 9–5", "Every day 8–6"},
+			}}}},
+			{Text: "Adding your hours.", Tools: []FakeToolCall{page("hours.html", "<h1>Hours</h1>")}},
+			{Text: "Your site is ready, with your opening hours on it."},
+		}}, nil
+	case "slow-asking-site":
+		// Same shape, but slow enough to cancel mid-build.
+		return &Fake{ScriptName: name, StepDelay: 200 * time.Millisecond, Steps: []FakeStep{
+			{Text: "Starting your site.", Tools: []FakeToolCall{page("index.html", "<h1>Bakery</h1>")}},
+			{Text: "Still working.", Tools: []FakeToolCall{page("about.html", "<h1>About</h1>")}},
+			{Text: "", Tools: []FakeToolCall{{Name: "ask_user", Input: map[string]any{
+				"question": "What are your opening hours?",
+			}}}},
+			{Text: "Adding your hours.", Tools: []FakeToolCall{page("hours.html", "<h1>Hours</h1>")}},
+			{Text: "Your site is ready."},
+		}}, nil
 	case "hostile":
 		// A prompt-injected agent: every step tries to escape the workspace.
 		// The platform must turn each into a tool error and nothing else.
