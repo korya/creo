@@ -281,7 +281,8 @@ func cmdServe(args []string) error {
 	data := fs.String("data", "./data", "data directory")
 	serveAddr := fs.String("serve-addr", "127.0.0.1:8081", "listen address for published/preview sites")
 	publicURL := fs.String("public-url", "", "public base URL of serve-addr (default: http://serve-addr)")
-	modelSpec := fs.String("model", "anthropic:claude-sonnet-5", "model spec: anthropic:<id> or fake:<script>")
+	modelSpec := fs.String("model", "anthropic:claude-sonnet-5",
+		"model spec: anthropic:<id>, openai:<id>[@<base-url>], or fake:<script>")
 	workers := fs.Int("workers", 2, "concurrent runs")
 	leaseTTL := fs.Duration("lease-ttl", 15*time.Second, "run lease TTL")
 	insecure := fs.Bool("insecure", false, "map unauthenticated requests to t_default (loopback only, dev mode)")

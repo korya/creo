@@ -111,7 +111,9 @@ interface ModelGateway {
 **Contracts:** budget is checked before every call and a `Deny` is final for that call (R-LLM-5 lives here); usage is recorded even for failed calls; no component other than the gateway holds provider credentials; a model lacking a capability the profile requires is rejected at run start with a plain-language event, not discovered mid-run.
 
 **Used by:** harness only.
-**Backing:** v-min ships two adapters — `anthropic` and `openai-compat` (covers OpenRouter, ChatGPT/OpenAI, Ollama/qwen, LM Studio, vLLM). Named providers with `base_url`/key/models in the settings file. Constraint to document for local models: the harness requires tool-calling capability (qwen3-class OK); structured-output fallback for weaker models is deferred.
+**Backing:** v-min ships two adapters — `anthropic` and `openai-compat` (covers OpenRouter, ChatGPT/OpenAI, Ollama/qwen, LM Studio, vLLM). Constraint to document for local models: the harness requires tool-calling capability (qwen3-class OK); structured-output fallback for weaker models is deferred.
+
+**`openai-compat` (implemented M4, `internal/model/openai.go`).** Written against the wire protocol, not a vendor SDK — that is what keeps one adapter covering every self-hosted server. Selected by the spec `openai:<model-id>[@<base-url>]` (default base URL is OpenAI's own); the key comes from `CREO_OPENAI_KEY`/`OPENAI_API_KEY` and an absent key is normal, since local servers want none. Two protocol differences are the entire adapter: tool arguments travel as a JSON-encoded *string* rather than an object, and tool results are top-level `role:"tool"` messages rather than blocks inside a user turn. One hard-won rule: **`finish_reason` is not trustworthy on local servers** — several report `"stop"` while emitting tool calls, so the presence of tool calls decides and the label only breaks ties. `internal/e2e/openai_test.go` drives the real binary through the real protocol against a scripted server (including that quirk); `scripts/demo-local-model.sh` is the AC-14 gate against a genuine local model, which CI cannot run.
 
 ## 5. SandboxProvider / Workspace
 
