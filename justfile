@@ -11,9 +11,6 @@ set shell := ["bash", "-c"]
 
 data := "./data"
 
-# Pinned so local and CI lint with identical rules; see `just install-lint`.
-golangci_version := "2.12.2"
-
 [doc("List available recipes")]
 default:
     @just --list
@@ -95,16 +92,6 @@ check-go-ci:
 lint-go-fix:
     golangci-lint run --fix ./... || true
 
-[doc("Install the pinned golangci-lint into GOPATH/bin (same version as CI)")]
-install-lint:
-    #!/usr/bin/env bash
-    # Pinned: an unpinned linter turns someone else's release into your red CI.
-    # If a locally installed golangci-lint (e.g. from Homebrew) disagrees with
-    # CI, run this — the pin here is the version that gates merges.
-    set -euo pipefail
-    curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh \
-        | sh -s -- -b "$(go env GOPATH)/bin" v{{ golangci_version }}
-    echo "installed golangci-lint v{{ golangci_version }} to $(go env GOPATH)/bin"
 
 [doc("TypeScript: format, lint, type-check via Vite+ — fixing in place")]
 check-ts:
