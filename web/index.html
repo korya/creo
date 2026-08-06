@@ -553,6 +553,36 @@
         padding: 12px 15px;
         border-radius: 16px 16px 16px 5px;
       }
+      /* A question from Creo: same voice as any other message, with the
+         obvious answers one tap away. Typing still works — the composer
+         answers the pending question too. */
+      .msg.creo.question {
+        border-color: var(--marigold);
+        background: var(--marigold-soft);
+      }
+      .msg.creo.question .q {
+        font-weight: 600;
+      }
+      .msg.creo.question .choices {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 11px;
+      }
+      .msg.creo.question .choice {
+        font-family: var(--sans);
+        font-size: 14px;
+        padding: 7px 13px;
+        border: 1.5px solid var(--marigold);
+        border-radius: 999px;
+        background: var(--card);
+        color: var(--ink);
+        cursor: pointer;
+      }
+      .msg.creo.question .choice:hover {
+        background: var(--marigold);
+        color: var(--card);
+      }
       .msg.note {
         align-self: center;
         text-align: center;
@@ -1083,6 +1113,7 @@
         <div class="title" id="ws-title">Your site</div>
         <span class="grow"></span>
         <span id="ws-status"><span class="spin"></span><span id="ws-status-text">Ready</span></span>
+        <button id="ws-stop" class="btn ghost small hidden">Stop</button>
         <button id="ws-history" class="btn ghost small">History</button>
         <button id="ws-publish" class="btn small" disabled>Publish</button>
       </div>

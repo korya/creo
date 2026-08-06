@@ -14,6 +14,7 @@ function setupDom() {
       <div id="chips"></div>
       <div id="limit-banner" class="hidden"></div>
       <textarea id="input"></textarea><button id="send"></button>
+      <button id="ws-stop" class="hidden"></button>
       <button id="ws-publish"></button>
       <div id="preview-building-text"></div>
       <iframe id="preview"></iframe>
@@ -23,10 +24,20 @@ function setupDom() {
   state.building = false;
   state.hasVersion = false;
   state.steps = [];
+  state.sessionState = "idle";
+  state.runId = "";
 }
 
 let seq = 0;
-const ev = (type: string, userText?: string): Event => ({ seq: ++seq, type, userText });
+const ev = (type: string, userText?: string, detail?: Record<string, unknown>): Event => ({
+  seq: ++seq,
+  type,
+  userText,
+  detail,
+});
+// The platform tells the client what state to render; tests drive that event
+// rather than poking internals, because that is the whole contract (R-SES-5).
+const stateEv = (s: string) => ev("session.state.changed", undefined, { state: s });
 
 describe("build progress rendering", () => {
   beforeEach(() => {
@@ -35,6 +46,7 @@ describe("build progress rendering", () => {
   });
 
   it("shows a transient build card from tool.result progress, not transcript bubbles", () => {
+    handleEvent(stateEv("working"));
     handleEvent(ev("run.started"));
     expect(document.getElementById("build-card")).not.toBeNull();
     expect(document.getElementById("screen-workspace")?.getAttribute("data-preview")).toBe(
@@ -52,9 +64,11 @@ describe("build progress rendering", () => {
   });
 
   it("clears the build card and building state on completion", () => {
+    handleEvent(stateEv("working"));
     handleEvent(ev("run.started"));
     handleEvent(ev("tool.result", "Working on your home page"));
     handleEvent(ev("run.completed", "Your site is ready!"));
+    handleEvent(stateEv("idle"));
     expect(document.getElementById("build-card")).toBeNull();
     expect(document.getElementById("screen-workspace")?.classList.contains("building")).toBe(false);
     // The final message IS a transcript bubble.
@@ -64,6 +78,7 @@ describe("build progress rendering", () => {
   });
 
   it("does not add a step for tool.result with no phrase (inspection tools)", () => {
+    handleEvent(stateEv("working"));
     handleEvent(ev("run.started"));
     handleEvent(ev("tool.result", "")); // read_file / list_files carry no phrase
     const steps = [...document.querySelectorAll("#build-steps .step")].map((s) => s.textContent);
@@ -71,6 +86,7 @@ describe("build progress rendering", () => {
   });
 
   it("collapses repeated identical phrases into one step", () => {
+    handleEvent(stateEv("working"));
     handleEvent(ev("run.started"));
     handleEvent(ev("tool.result", "Working on your home page"));
     handleEvent(ev("tool.result", "Working on your home page"));
@@ -128,6 +144,90 @@ describe("gentle error surfacing", () => {
     expect(banner?.classList.contains("hidden")).toBe(false);
     expect(banner?.textContent).toContain("free changes");
     expect(document.querySelectorAll(".msg").length).toBe(0);
+  });
+});
+
+describe("questions from Creo", () => {
+  beforeEach(() => {
+    seq = 0;
+    setupDom();
+  });
+
+  const card = () => document.getElementById("question-card");
+
+  it("renders the question verbatim with its choices as buttons", () => {
+    handleEvent(stateEv("working"));
+    handleEvent(
+      ev("input.requested", "What are your opening hours?", {
+        choices: ["Weekdays 9–5", "Every day 8–6"],
+      }),
+    );
+    handleEvent(stateEv("waiting-for-input"));
+    expect(card()?.querySelector(".q")?.textContent).toBe("What are your opening hours?");
+    expect(
+      [...document.querySelectorAll("#question-card .choice")].map((c) => c.textContent),
+    ).toEqual(["Weekdays 9–5", "Every day 8–6"]);
+    // Waiting is not working: the composer stays open so free text works too.
+    expect(document.querySelector<HTMLButtonElement>("#send")?.disabled).toBe(false);
+    expect(document.getElementById("ws-status-text")?.textContent).toBe("Waiting for your answer");
+  });
+
+  it("renders a question with no choices — free text is always allowed", () => {
+    handleEvent(ev("input.requested", "What should the homepage say?"));
+    handleEvent(stateEv("waiting-for-input"));
+    expect(card()).not.toBeNull();
+    expect(document.querySelectorAll("#question-card .choice").length).toBe(0);
+  });
+
+  it("shows the answer another device gave, and retires the question", () => {
+    handleEvent(
+      ev("input.requested", "What are your opening hours?", { choices: ["Weekdays 9–5"] }),
+    );
+    handleEvent(stateEv("waiting-for-input"));
+    // The other device answered; this one learns via the stream (AC-5).
+    handleEvent(ev("input.provided", "Weekdays 9–5"));
+    handleEvent(stateEv("queued"));
+    expect(card()).toBeNull();
+    expect([...document.querySelectorAll(".msg.you")].map((m) => m.textContent)).toEqual([
+      "Weekdays 9–5",
+    ]);
+  });
+});
+
+describe("session state is rendered, never inferred", () => {
+  beforeEach(() => {
+    seq = 0;
+    setupDom();
+  });
+
+  const stopHidden = () => document.getElementById("ws-stop")?.classList.contains("hidden") ?? true;
+
+  it("offers Stop only while work is in flight", () => {
+    expect(stopHidden()).toBe(true);
+    handleEvent(stateEv("working"));
+    expect(stopHidden()).toBe(false);
+    handleEvent(stateEv("waiting-for-input"));
+    expect(stopHidden()).toBe(true); // nothing to stop: it's the user's turn
+    handleEvent(stateEv("idle"));
+    expect(stopHidden()).toBe(true);
+  });
+
+  it("does not treat run.completed alone as idle — the platform says when", () => {
+    handleEvent(stateEv("working"));
+    handleEvent(ev("run.completed", "Done!"));
+    // No state event yet: still working as far as the client knows.
+    expect(state.sessionState).toBe("working");
+    handleEvent(stateEv("idle"));
+    expect(state.sessionState).toBe("idle");
+    expect(document.getElementById("ws-status-text")?.textContent).toBe("Ready");
+  });
+
+  it("surfaces a cancellation as a plain note, not an error", () => {
+    handleEvent(stateEv("working"));
+    handleEvent(ev("run.cancelled", "Stopped. Your site is as it was before this change."));
+    handleEvent(stateEv("idle"));
+    const notes = [...document.querySelectorAll(".msg.note")].map((m) => m.textContent);
+    expect(notes).toEqual(["Stopped. Your site is as it was before this change."]);
   });
 });
 

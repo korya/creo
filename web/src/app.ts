@@ -11,6 +11,7 @@ import {
   type LoginFlow,
   type Principal,
   type Project,
+  type SessionState,
   type Version,
 } from "./api";
 
@@ -29,6 +30,8 @@ interface State {
   publishedUrl: string;
   steps: string[]; // distinct build-progress phrases for the current run
   who: Principal | null;
+  sessionState: SessionState; // told to us by the platform, never inferred
+  runId: string;
 }
 const state: State = {
   screen: "key",
@@ -41,6 +44,8 @@ const state: State = {
   publishedUrl: "",
   steps: [],
   who: null,
+  sessionState: "idle",
+  runId: "",
 };
 let unsub: (() => void) | null = null;
 // The family-mode banner's dismissal deliberately lives here and nowhere else:
@@ -214,16 +219,35 @@ function updatePreviewState() {
   ws.setAttribute("data-preview", mode);
 }
 
-function setBuilding(b: boolean) {
-  state.building = b;
-  $("screen-workspace")?.classList.toggle("building", b);
+// applyState renders whatever state the platform reported. Everything visible
+// hangs off this one value, so a second device that just joined shows exactly
+// what the first one shows.
+function applyState(next: SessionState) {
+  state.sessionState = next;
+  const working = next === "working" || next === "queued";
+  const asking = next === "waiting-for-input";
+  state.building = working;
+
+  $("screen-workspace")?.classList.toggle("building", working);
   const send = $<HTMLButtonElement>("send");
-  if (send) send.disabled = b;
+  if (send) send.disabled = working;
   const pub = $<HTMLButtonElement>("ws-publish");
-  if (pub) pub.disabled = b || !state.hasVersion;
+  if (pub) pub.disabled = working || !state.hasVersion;
+  const stop = $<HTMLButtonElement>("ws-stop");
+  if (stop) stop.classList.toggle("hidden", !working);
+
   const st = $("ws-status-text");
-  if (st) st.textContent = b ? "Creo is working…" : "Ready";
-  if (!b) clearBuild();
+  if (st) {
+    st.textContent = working
+      ? "Creo is working…"
+      : asking
+        ? "Waiting for your answer"
+        : next === "failed"
+          ? "Something needs your attention"
+          : "Ready";
+  }
+  if (!working) clearBuild();
+  if (!asking) clearQuestion();
   updatePreviewState();
 }
 
@@ -242,10 +266,62 @@ async function refreshPreview() {
   }
 }
 
+// ---------------------------------------------------------------- questions
+// A question is a card in the transcript with tappable choices. Free text
+// always works too — the composer answers the pending question by itself.
+function renderQuestion(text: string, choices: string[]) {
+  clearQuestion();
+  const log = $("log");
+  if (!log) return;
+  const card = document.createElement("div");
+  card.id = "question-card";
+  card.className = "msg creo question";
+  const q = document.createElement("div");
+  q.className = "q";
+  q.textContent = text;
+  card.appendChild(q);
+  if (choices.length > 0) {
+    const row = document.createElement("div");
+    row.className = "choices";
+    for (const c of choices) {
+      const b = document.createElement("button");
+      b.className = "choice";
+      b.textContent = c;
+      b.addEventListener("click", () => void answer(c));
+      row.appendChild(b);
+    }
+    card.appendChild(row);
+  }
+  log.appendChild(card);
+  log.scrollTop = log.scrollHeight;
+  $("input")?.focus();
+}
+
+function clearQuestion() {
+  document.getElementById("question-card")?.remove();
+}
+
+// answer sends a reply to the pending question. Tapping a choice and typing
+// the same words are the same act, so both take this path.
+async function answer(text: string) {
+  clearQuestion();
+  // No optimistic echo: input.provided renders the words, so they look the
+  // same live, on reload, and on the other device.
+  applyState("queued");
+  try {
+    if (state.runId) await api.answer(state.runId, text);
+    else await api.sendMessage(state.sessionId, text, crypto.randomUUID());
+  } catch (err) {
+    addMessage("note", String(err));
+    applyState("idle");
+  }
+}
+
 // ---------------------------------------------------------------- events
 function handleEvent(e: Event) {
   if (e.seq <= state.lastSeq) return;
   state.lastSeq = e.seq;
+  if (e.runId) state.runId = e.runId;
   switch (e.type) {
     case "user.message":
       // Single source of truth: the user's own words render here — live AND on
@@ -255,11 +331,31 @@ function handleEvent(e: Event) {
         $("chips")?.classList.add("hidden");
       }
       break;
+    case "session.state.changed": {
+      // The one place session state is decided — by the platform, not here.
+      const next = (e.detail as { state?: SessionState } | undefined)?.state;
+      if (next) applyState(next);
+      if (next === "working" || next === "queued") renderBuild();
+      break;
+    }
     case "run.started":
     case "run.resumed":
       state.steps = [];
-      setBuilding(true);
       renderBuild();
+      break;
+    case "input.requested": {
+      const d = e.detail as { choices?: string[] } | undefined;
+      if (e.userText) renderQuestion(e.userText, d?.choices ?? []);
+      break;
+    }
+    case "input.provided":
+      // The answer belongs in the transcript, wherever it was given — this is
+      // how the OTHER device learns what was answered (AC-5).
+      clearQuestion();
+      if (e.userText) addMessage("you", e.userText);
+      break;
+    case "run.cancelled":
+      if (e.userText) addMessage("note", e.userText);
       break;
     case "tool.result":
       // Plain-language build progress, authored server-side (fix-01).
@@ -294,8 +390,9 @@ function handleEvent(e: Event) {
       if (e.userText) addMessage("note", e.userText);
       break;
   }
-  if (e.type === "run.completed" || e.type === "run.failed") {
-    setBuilding(false);
+  // The end of a run is worth a fresh preview. The session's *state* is not
+  // inferred here — session.state.changed carries it.
+  if (e.type === "run.completed" || e.type === "run.failed" || e.type === "run.cancelled") {
     void refreshPreview();
   }
 }
@@ -319,6 +416,9 @@ function resetWorkspace(title: string) {
   state.hasVersion = false;
   state.steps = [];
   state.siteTitle = title;
+  state.sessionState = "idle";
+  state.runId = "";
+  clearQuestion();
   const t = $("ws-title");
   if (t) t.textContent = title;
   const st = $("ws-status-text");
@@ -350,6 +450,17 @@ async function openProject(p: Project) {
     for (const e of events) handleEvent(e);
   } catch {
     /* fresh session, nothing to replay */
+  }
+  // Authoritative first paint: whatever the replay implied, the platform's
+  // own answer wins — this is what makes a second device show the truth
+  // immediately, including a question asked before it joined (AC-4/AC-5).
+  try {
+    const status = await api.session(p.sessionId);
+    state.runId = status.runId ?? state.runId;
+    applyState(status.state);
+    if (status.question) renderQuestion(status.question.text, status.question.choices ?? []);
+  } catch {
+    /* older server without the endpoint — events already covered it */
   }
   subscribe();
   void refreshPreview();
@@ -425,7 +536,13 @@ async function send() {
   const text = input.value.trim();
   if (!text || state.building) return;
   input.value = "";
-  setBuilding(true);
+  // Typing while Creo is waiting on a question IS the answer — the same act
+  // as tapping a choice, so it takes the same path.
+  if (state.sessionState === "waiting-for-input") {
+    await answer(text);
+    return;
+  }
+  applyState("queued");
   try {
     if (!state.projectId) {
       const p = await api.createProject("Your site");
@@ -435,10 +552,21 @@ async function send() {
       localStorage.setItem("creo_session", p.sessionId);
       subscribe();
     }
-    await api.sendMessage(state.sessionId, text, crypto.randomUUID());
+    const { runId } = await api.sendMessage(state.sessionId, text, crypto.randomUUID());
+    state.runId = runId;
   } catch (err) {
     addMessage("note", String(err));
-    setBuilding(false);
+    applyState("idle");
+  }
+}
+
+// stop cancels the run in flight (R-RUN-4). Whatever was already saved stays.
+async function stop() {
+  if (!state.runId) return;
+  try {
+    await api.cancel(state.runId);
+  } catch (err) {
+    if (!(err instanceof ApiError && err.status === 409)) addMessage("note", String(err));
   }
 }
 
@@ -658,6 +786,7 @@ export function init() {
     state.sessionId = "";
     loadHome().catch(reportFailure);
   });
+  $("ws-stop")?.addEventListener("click", () => void stop());
   $("ws-publish")?.addEventListener("click", openPublishModal);
   $("ws-history")?.addEventListener("click", openHistory);
 

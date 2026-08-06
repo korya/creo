@@ -13,6 +13,19 @@ export interface Event {
   type: string;
   userText?: string;
   runId?: string;
+  detail?: Record<string, unknown>;
+}
+
+// The state the platform tells clients to render (R-SES-5). Clients never
+// infer state from event patterns — that is how N clients drift into N
+// different notions of "working".
+export type SessionState = "idle" | "queued" | "working" | "waiting-for-input" | "failed";
+
+export interface SessionStatus {
+  id: string;
+  state: SessionState;
+  runId?: string;
+  question?: { text: string; choices?: string[] };
 }
 
 export interface PublishResult {
@@ -159,6 +172,21 @@ export class Api {
       { text },
       { "Idempotency-Key": idempotencyKey },
     );
+  }
+
+  // Current session state for first paint, before any events arrive.
+  session(sessionId: string): Promise<SessionStatus> {
+    return this.json<SessionStatus>("GET", `/v1/sessions/${sessionId}`);
+  }
+
+  // Answer a pending question. Equivalent to sending a message while one is
+  // pending — the server treats both as the answer.
+  answer(runId: string, text: string): Promise<{ runId: string }> {
+    return this.json("POST", `/v1/runs/${runId}/input`, { text });
+  }
+
+  cancel(runId: string): Promise<{ runId: string; status: string }> {
+    return this.json("POST", `/v1/runs/${runId}/cancel`, {});
   }
 
   // Cursor-based replay of the whole session (used to hydrate on load).
