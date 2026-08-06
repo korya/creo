@@ -37,12 +37,21 @@ jobs:
             | bash -s -- --to "$HOME/.local/bin"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
+      # Same pinned version the justfile installs, so a lint failure here is
+      # always reproducible with `just check` locally. PATH is set explicitly
+      # rather than assuming setup-go exports GOPATH/bin.
+      - name: Install golangci-lint
+        run: |
+          just install-lint
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
       - name: Install web dependencies
         working-directory: web
         run: npm ci
 
-      # Verify-only: fails if gofmt, oxfmt, oxlint, the type-checker, or
-      # `go mod tidy -diff` would change anything. Writes nothing.
+      # Verify-only: fails if gofmt, golangci-lint, oxfmt, oxlint, the
+      # type-checker, or `go mod tidy -diff` would change anything or object.
+      # Writes nothing.
       - name: Check (format, lint, types, module graph)
         run: just check-ci
 

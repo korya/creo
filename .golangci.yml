@@ -1,0 +1,62 @@
+# golangci-lint configuration.
+#
+# Selection principle: every linter here must catch a class of bug this
+# codebase can actually produce. A linter that mostly fires on style gets
+# suppressed within a week, and suppressed linters are worse than absent ones
+# because they train people to add `//nolint` reflexively.
+#
+# Formatting is deliberately NOT here — `just check` runs gofmt directly, and
+# two tools rewriting the same files is a way to get a merge conflict with
+# yourself.
+version: "2"
+
+linters:
+  default: standard # errcheck, govet, ineffassign, staticcheck, unused
+  enable:
+    # Raw SQL everywhere: a result set whose iteration stopped early looks
+    # identical to a complete one unless rows.Err() is checked.
+    - rowserrcheck
+    - sqlclosecheck
+    # The platform leans hard on errors.Is/As for control flow (ErrStaleLease,
+    # ErrNotWaiting, ErrBudgetExceeded). A `==` comparison or a `%v` instead of
+    # `%w` silently breaks that, and the failure mode is a run that should have
+    # been fenced and wasn't.
+    - errorlint
+    # HTTP clients in the CLI, the model adapters, and the e2e harness.
+    - bodyclose
+    # User-facing strings are a product surface here (R-AGT-2), so typos in
+    # them are product bugs, not cosmetics.
+    - misspell
+    # Any suppression must say why. Keeps the escape hatch honest.
+    - nolintlint
+
+  settings:
+    errcheck:
+      # Cleanup calls whose error is genuinely unactionable. Everything not
+      # listed must be handled or explicitly assigned to `_` at the call site,
+      # which makes "I meant to ignore this" visible in review.
+      exclude-functions:
+        - (*database/sql.Tx).Rollback # the original error is already being returned
+        - (io.Closer).Close
+        - (*database/sql.Rows).Close
+        - (*os.File).Close
+        - (io.ReadCloser).Close
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+      allow-unused: false
+
+  exclusions:
+    generated: lax
+    rules:
+      # Tests assert on outcomes, not on the error of every fixture call;
+      # requiring it there buys noise, not safety.
+      - path: _test\.go
+        linters: [errcheck, bodyclose]
+      # flag.ExitOnError means Parse can only return nil — it exits otherwise.
+      - path: cmd/creo/main\.go
+        text: "Error return value of `fs.Parse` is not checked"
+        linters: [errcheck]
+      # Writing to stdout/stderr in a CLI: nothing useful to do if it fails.
+      - text: "Error return value of `fmt.Fprint(f|ln)?` is not checked"
+        linters: [errcheck]
