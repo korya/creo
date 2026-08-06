@@ -25,7 +25,7 @@ func testStore(t *testing.T) (*Store, *store.DB) {
 func TestTokenLifecycle(t *testing.T) {
 	s, _ := testStore(t)
 	ctx := context.Background()
-	ten, err := s.Create(ctx, "acme", nil, 2)
+	ten, err := s.Create(ctx, "acme", nil, 2, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,8 +92,8 @@ func TestBudget(t *testing.T) {
 	s, db := testStore(t)
 	ctx := context.Background()
 	limit := int64(1000)
-	ten, _ := s.Create(ctx, "capped", &limit, 2)
-	other, _ := s.Create(ctx, "other", nil, 2)
+	ten, _ := s.Create(ctx, "capped", &limit, 2, nil)
+	other, _ := s.Create(ctx, "other", nil, 2, nil)
 
 	// Yesterday's spend does not count against today's window.
 	seedUsage(t, db, ten.ID, 5000, time.Now().UTC().Add(-30*time.Hour))

@@ -282,8 +282,11 @@ func (h *Harness) commitProgress(ctx context.Context, r *run.Run, ws *workspace.
 // happens here, at emit time — clients render userText, never interpret.
 func (h *Harness) EmitFailure(ctx context.Context, r *run.Run, cause error) {
 	text := "Something went wrong while working on your site. Your project is safe — please try again."
-	if errors.Is(cause, tenant.ErrBudgetExceeded) {
+	switch {
+	case errors.Is(cause, tenant.ErrBudgetExceeded):
 		text = "The AI budget for this account is used up for today. Your project is safe — try again tomorrow, or ask whoever runs this server to raise the limit."
+	case errors.Is(cause, tenant.ErrStorageExceeded):
+		text = "There's no room left to save more changes. Your site is safe as it is — ask whoever runs this server for more space, or remove a few images to free some up."
 	}
 	h.Log.Append(ctx, r.SessionID, []eventlog.NewEvent{{
 		Type: EvRunFailed, RunID: r.ID,

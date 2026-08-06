@@ -19,7 +19,7 @@ func testSetup(t *testing.T) (*store.DB, string) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { db.Close() })
-	tn, err := tenant.New(db).Create(context.Background(), "family", nil, 2)
+	tn, err := tenant.New(db).Create(context.Background(), "family", nil, 2, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +172,7 @@ func TestExpiredSessionRejectedAndRollingRenewal(t *testing.T) {
 func TestPickerScopedToBoundTenant(t *testing.T) {
 	db, tid := testSetup(t)
 	ctx := context.Background()
-	other, err := tenant.New(db).Create(ctx, "other", nil, 2)
+	other, err := tenant.New(db).Create(ctx, "other", nil, 2, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

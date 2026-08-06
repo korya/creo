@@ -109,6 +109,18 @@ func New(cfg Config) (*Server, error) {
 		return nil, err
 	}
 	tenants := tenant.New(db)
+	// D2 / R-TEN-3: the storage cap, enforced where the store actually grows.
+	ps.Quota = func(ctx context.Context, projectID string, blobs []project.Blob) error {
+		tid, err := tenants.TenantOfProject(ctx, projectID)
+		if err != nil {
+			return err
+		}
+		sizes := make(map[string]int64, len(blobs))
+		for _, b := range blobs {
+			sizes[b.SHA] = b.Size
+		}
+		return tenants.CheckStorage(ctx, tid, sizes)
+	}
 	// The hard budget stop (R-LLM-5): resolved per run, checked before every
 	// model call inside Metered — the one point no model traffic can bypass.
 	budget := func(ctx context.Context, runID string) error {
