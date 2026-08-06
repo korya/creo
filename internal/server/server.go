@@ -77,9 +77,9 @@ func New(cfg Config) (*Server, error) {
 	if cfg.ServeAddr == "" {
 		cfg.ServeAddr = "127.0.0.1:8081"
 	}
-	if cfg.PublicURL == "" {
-		cfg.PublicURL = "http://" + cfg.ServeAddr
-	}
+	// An empty PublicURL is meaningful: links are then derived per request, so
+	// a phone on the LAN gets a host it can actually open. An explicit
+	// --public-url still wins (the Tailscale / reverse-proxy case).
 	cfg.PublicURL = strings.TrimSuffix(cfg.PublicURL, "/")
 	if cfg.Insecure && !isLoopback(cfg.Addr) {
 		return nil, fmt.Errorf("--insecure refuses to bind non-loopback address %q", cfg.Addr)
@@ -176,7 +176,7 @@ func New(cfg Config) (*Server, error) {
 		Addr: cfg.Addr,
 		Handler: api.New(api.Deps{
 			DB: db, Log: elog, Coord: coord, Projects: ps, Tenants: tenants, Publish: pub,
-			Identity: ids, PublicURL: cfg.PublicURL, Web: web,
+			Identity: ids, PublicURL: cfg.PublicURL, ServePort: portOf(cfg.ServeAddr), Web: web,
 			InsecureTenant: insecureTenant, Unsecured: unsecured,
 		}).Routes(),
 	}
@@ -219,6 +219,13 @@ func staticTenant(db *store.DB) (tenantID string, users int, err error) {
 			"accounts exist in %d tenants, but account-switch login serves exactly one; "+
 				"other tenants use API tokens (this multi-tenant shape is the T2 profile — see docs)", len(tenants))
 	}
+}
+
+func portOf(addr string) string {
+	if _, port, err := net.SplitHostPort(addr); err == nil {
+		return port
+	}
+	return ""
 }
 
 func isLoopback(addr string) bool {

@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -45,14 +46,18 @@ func actor(r *http.Request) string    { return principal(r).UserID }
 const SessionCookie = "creo_session"
 
 type Deps struct {
-	DB        *store.DB
-	Log       *eventlog.Log
-	Coord     *run.Coordinator
-	Projects  *project.Store
-	Tenants   *tenant.Store
-	Publish   *publish.Store
-	Identity  *identity.Service
-	PublicURL string       // base URL of the serving port, e.g. http://127.0.0.1:8081
+	DB       *store.DB
+	Log      *eventlog.Log
+	Coord    *run.Coordinator
+	Projects *project.Store
+	Tenants  *tenant.Store
+	Publish  *publish.Store
+	Identity *identity.Service
+	// PublicURL is the operator-declared base of the serving port. Empty means
+	// "derive it from each request" — see publicBase.
+	PublicURL string
+	// ServePort is the port sites are served on, used when deriving.
+	ServePort string
 	Web       http.Handler // the embedded SPA app shell, served at /
 
 	// InsecureTenant, when non-empty, maps unauthenticated requests to that
@@ -186,6 +191,37 @@ func (a *API) me(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, principal(r))
 }
 
+// publicBase is the base URL for preview and published links, as reachable by
+// the client that asked. A phone on the LAN must not be handed a
+// 127.0.0.1 link that resolves to the phone itself, so when the operator has
+// not declared a public URL we derive one from the host this request arrived
+// on, swapping in the serving port.
+//
+// The Host header is attacker-controllable, so it is used for exactly one
+// thing: formatting a link returned to that same caller. It never influences
+// auth, routing, or storage — a lying Host hurts only the liar.
+func (a *API) publicBase(r *http.Request) string {
+	if a.PublicURL != "" {
+		return a.PublicURL
+	}
+	host := r.Host
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	port := a.ServePort
+	if port == "" {
+		port = "8081"
+	}
+	return scheme + "://" + net.JoinHostPort(host, port)
+}
+
 // sessionOfProject returns a project's (single, M0/M1) session, for attaching
 // publish lifecycle events to the log.
 func (a *API) sessionOfProject(ctx context.Context, projectID string) (string, error) {
@@ -221,7 +257,7 @@ func (a *API) publishProject(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	url := a.PublicURL + "/sites/" + live.Slug + "/"
+	url := a.publicBase(r) + "/sites/" + live.Slug + "/"
 	a.appendProjectEvent(r.Context(), projectID, "publish.completed",
 		"Your site is live.", actor(r), map[string]string{"versionId": versionID, "url": url})
 	writeJSON(w, http.StatusOK, map[string]string{"url": url, "versionId": versionID})
@@ -241,7 +277,7 @@ func (a *API) rollbackProject(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	url := a.PublicURL + "/sites/" + live.Slug + "/"
+	url := a.publicBase(r) + "/sites/" + live.Slug + "/"
 	a.appendProjectEvent(r.Context(), projectID, "publish.rolled_back",
 		"Your site was rolled back to the previous version.", actor(r), map[string]string{"versionId": live.VersionID, "url": url})
 	writeJSON(w, http.StatusOK, map[string]string{"url": url, "versionId": live.VersionID})
@@ -264,7 +300,7 @@ func (a *API) previewURL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{
-		"url":       a.PublicURL + "/preview/" + projectID + "/" + secret + "/" + versionID + "/",
+		"url":       a.publicBase(r) + "/preview/" + projectID + "/" + secret + "/" + versionID + "/",
 		"versionId": versionID,
 	})
 }
