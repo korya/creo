@@ -20,6 +20,7 @@ import (
 	"github.com/korya/creo/internal/api"
 	"github.com/korya/creo/internal/eventlog"
 	"github.com/korya/creo/internal/harness"
+	"github.com/korya/creo/internal/identity"
 	"github.com/korya/creo/internal/model"
 	"github.com/korya/creo/internal/project"
 	"github.com/korya/creo/internal/publish"
@@ -41,6 +42,12 @@ type Config struct {
 	LeaseTTL  time.Duration // default 15s
 	Insecure  bool          // map unauthenticated requests to t_default; loopback only
 	WebDir    string        // serve the web client from disk instead of the embedded bundle (dev)
+
+	// AllowUnsecured overrides the static-login exposure fence (components.md
+	// §11): passwordless account-switch on a globally reachable address. The
+	// override is logged at startup and surfaced on /healthz — a decision,
+	// never a default.
+	AllowUnsecured bool
 }
 
 type Server struct {
@@ -116,6 +123,24 @@ func New(cfg Config) (*Server, error) {
 		insecureTenant = "t_default"
 		slog.Warn("INSECURE MODE: unauthenticated requests map to t_default — dev only")
 	}
+	// Human login: the static driver binds to the single tenant that owns
+	// accounts (the family). Accounts in a second tenant are a T2-shaped
+	// deployment and static login refuses to serve it ambiguously.
+	boundTenant, userCount, err := staticTenant(db)
+	if err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err := checkExposure(cfg.Addr, userCount > 0, cfg.AllowUnsecured, net.InterfaceAddrs); err != nil {
+		db.Close()
+		return nil, err
+	}
+	unsecured := false
+	if cfg.AllowUnsecured && userCount > 0 && checkExposure(cfg.Addr, true, false, net.InterfaceAddrs) != nil {
+		unsecured = true
+		slog.Warn("ALLOW-UNSECURED OVERRIDE ACTIVE: passwordless account login is reachable beyond your private network")
+	}
+	ids := identity.NewService(db, identity.NewStatic(db, boundTenant))
 	s := &Server{
 		cfg:   cfg,
 		db:    db,
@@ -136,14 +161,52 @@ func New(cfg Config) (*Server, error) {
 		return nil, err
 	}
 	s.http = &http.Server{
-		Addr:    cfg.Addr,
-		Handler: api.New(db, elog, coord, ps, tenants, pub, cfg.PublicURL, insecureTenant, web).Routes(),
+		Addr: cfg.Addr,
+		Handler: api.New(api.Deps{
+			DB: db, Log: elog, Coord: coord, Projects: ps, Tenants: tenants, Publish: pub,
+			Identity: ids, PublicURL: cfg.PublicURL, Web: web,
+			InsecureTenant: insecureTenant, Unsecured: unsecured,
+		}).Routes(),
 	}
 	s.serving = &http.Server{
 		Addr:    cfg.ServeAddr,
 		Handler: serving.New(ps, pub, harness.DefaultProfile().CSP).Routes(),
 	}
 	return s, nil
+}
+
+// staticTenant finds the one tenant owning human accounts (the static
+// driver's bound tenant). No accounts → bind to t_default (empty picker).
+// Accounts in more than one tenant → refuse with a plain explanation.
+func staticTenant(db *store.DB) (tenantID string, users int, err error) {
+	rows, err := db.R.Query(`SELECT tenant_id, COUNT(*) FROM users WHERE disabled_at IS NULL GROUP BY tenant_id`)
+	if err != nil {
+		return "", 0, err
+	}
+	defer rows.Close()
+	var tenants []string
+	for rows.Next() {
+		var tid string
+		var n int
+		if err := rows.Scan(&tid, &n); err != nil {
+			return "", 0, err
+		}
+		tenants = append(tenants, tid)
+		users += n
+	}
+	if err := rows.Err(); err != nil {
+		return "", 0, err
+	}
+	switch len(tenants) {
+	case 0:
+		return "t_default", 0, nil
+	case 1:
+		return tenants[0], users, nil
+	default:
+		return "", users, fmt.Errorf(
+			"accounts exist in %d tenants, but account-switch login serves exactly one; "+
+				"other tenants use API tokens (this multi-tenant shape is the T2 profile — see docs)", len(tenants))
+	}
 }
 
 func isLoopback(addr string) bool {
