@@ -11,6 +11,9 @@ set shell := ["bash", "-c"]
 
 data := "./data"
 
+# Pinned so local and CI lint with identical rules; see `just install-lint`.
+golangci_version := "2.12.2"
+
 [doc("List available recipes")]
 default:
     @just --list
@@ -61,13 +64,14 @@ check: check-go check-ts
 [doc("Verify everything without writing a file — the CI gate")]
 check-ci: check-go-ci check-ts-ci
 
-[doc("Go: format, tidy, vet — fixing in place")]
-check-go:
+[doc("Go: format, tidy, vet, lint — fixing what it can in place")]
+check-go: lint-go-fix
     gofmt -w .
     go mod tidy
     go vet ./...
+    golangci-lint run ./...
 
-[doc("Go: verify only — fails if gofmt or go mod tidy would change anything")]
+[doc("Go: verify only — fails if gofmt, tidy, vet, or golangci-lint object")]
 check-go-ci:
     #!/usr/bin/env bash
     # `go mod tidy -diff` (Go 1.23+) prints what tidy would change and exits
@@ -82,6 +86,25 @@ check-go-ci:
     fi
     go vet ./...
     go mod tidy -diff
+    golangci-lint run ./...
+
+# Applies the autofixes golangci-lint can make on its own, so `check` stays a
+# fix-in-place recipe. Findings it cannot fix are reported by check-go's own
+# `golangci-lint run` immediately afterwards.
+[private]
+lint-go-fix:
+    golangci-lint run --fix ./... || true
+
+[doc("Install the pinned golangci-lint into GOPATH/bin (same version as CI)")]
+install-lint:
+    #!/usr/bin/env bash
+    # Pinned: an unpinned linter turns someone else's release into your red CI.
+    # If a locally installed golangci-lint (e.g. from Homebrew) disagrees with
+    # CI, run this — the pin here is the version that gates merges.
+    set -euo pipefail
+    curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh \
+        | sh -s -- -b "$(go env GOPATH)/bin" v{{ golangci_version }}
+    echo "installed golangci-lint v{{ golangci_version }} to $(go env GOPATH)/bin"
 
 [doc("TypeScript: format, lint, type-check via Vite+ — fixing in place")]
 check-ts:
