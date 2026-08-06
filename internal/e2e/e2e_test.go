@@ -1,10 +1,22 @@
-// Package e2e runs the M0 acceptance tests against the real `creo` binary:
-// AC-1 kill -9 mid-run and resume, AC-2 workspace loss, AC-3 duplicate submit.
+// Package e2e runs the acceptance tests against the real `creo` binary, over
+// the public HTTP API only — no package here imports the platform's internals,
+// which is what makes the suite proof of headlessness (P2) rather than just
+// coverage. Failure injection is real: SIGKILL, SIGTERM, deleting the
+// workspace off disk, concurrent duplicate submits.
+//
+// No test ever calls a model provider. Every run is driven by a scripted fake
+// (model.FakeScript) that picks its step from the transcript, so kill-and-
+// resume is deterministic and CI needs no API key. Real providers appear only
+// in scripts/demo-m0.sh and scripts/demo-local-model.sh, both manual.
+//
+// The whole package is skipped under -short: it builds and spawns a binary,
+// which is the wrong cost for an inner loop.
 package e2e
 
 import (
 	"bytes"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"net"
 	"net/http"
@@ -19,6 +31,13 @@ import (
 var binPath string
 
 func TestMain(m *testing.M) {
+	// testing.Short() reads a flag, and TestMain runs before the testing
+	// package parses them — without this it would panic.
+	flag.Parse()
+	if testing.Short() {
+		fmt.Fprintln(os.Stderr, "e2e: skipped (-short); run `just test-full` for the acceptance suite")
+		os.Exit(0)
+	}
 	dir, err := os.MkdirTemp("", "creo-e2e-bin")
 	if err != nil {
 		panic(err)
