@@ -221,6 +221,11 @@ func isLoopback(addr string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
+// buildGateway parses a model spec:
+//
+//	anthropic:<model-id>
+//	openai:<model-id>[@<base-url>]   base-url defaults to OpenAI's own API
+//	fake:<script>                    tests and demos; no key, no network
 func buildGateway(spec string) (model.Gateway, error) {
 	kind, arg, _ := strings.Cut(spec, ":")
 	switch kind {
@@ -229,10 +234,19 @@ func buildGateway(spec string) (model.Gateway, error) {
 			arg = "claude-sonnet-5"
 		}
 		return model.NewAnthropic(arg), nil
+	case "openai":
+		modelID, baseURL, hasURL := strings.Cut(arg, "@")
+		if modelID == "" {
+			return nil, fmt.Errorf("model spec %q needs a model id (openai:<id>[@<base-url>])", spec)
+		}
+		if !hasURL || baseURL == "" {
+			baseURL = "https://api.openai.com/v1"
+		}
+		return model.NewOpenAICompat(modelID, baseURL), nil
 	case "fake":
 		return model.FakeScript(arg)
 	default:
-		return nil, fmt.Errorf("unknown model spec %q (want anthropic:<id> or fake:<script>)", spec)
+		return nil, fmt.Errorf("unknown model spec %q (want anthropic:<id>, openai:<id>[@<url>], or fake:<script>)", spec)
 	}
 }
 
