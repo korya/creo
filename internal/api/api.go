@@ -21,6 +21,7 @@ import (
 
 	"github.com/korya/creo/internal/eventlog"
 	"github.com/korya/creo/internal/harness"
+	"github.com/korya/creo/internal/identity"
 	"github.com/korya/creo/internal/project"
 	"github.com/korya/creo/internal/publish"
 	"github.com/korya/creo/internal/run"
@@ -30,32 +31,58 @@ import (
 
 type ctxKey int
 
-const tenantKey ctxKey = 0
+const principalKey ctxKey = 0
 
-func tenantID(r *http.Request) string { return r.Context().Value(tenantKey).(string) }
+func principal(r *http.Request) identity.Principal {
+	return r.Context().Value(principalKey).(identity.Principal)
+}
+func tenantID(r *http.Request) string { return principal(r).TenantID }
+func actor(r *http.Request) string    { return principal(r).UserID }
+
+// SessionCookie carries the web session token minted by the IdentityService.
+// HttpOnly + SameSite=Lax; no Secure flag at T1 (the documented plain-HTTP
+// LAN concession — PRD open question #4).
+const SessionCookie = "creo_session"
+
+type Deps struct {
+	DB        *store.DB
+	Log       *eventlog.Log
+	Coord     *run.Coordinator
+	Projects  *project.Store
+	Tenants   *tenant.Store
+	Publish   *publish.Store
+	Identity  *identity.Service
+	PublicURL string       // base URL of the serving port, e.g. http://127.0.0.1:8081
+	Web       http.Handler // the embedded SPA app shell, served at /
+
+	// InsecureTenant, when non-empty, maps unauthenticated requests to that
+	// tenant. Set only by `serve --insecure` (loopback-only, dev mode).
+	InsecureTenant string
+	// Unsecured marks an active --allow-unsecured override; surfaced on
+	// /healthz so the operator can always tell (components.md §11 layer 3).
+	Unsecured bool
+}
 
 type API struct {
-	db        *store.DB
-	log       *eventlog.Log
-	coord     *run.Coordinator
-	projects  *project.Store
-	tenants   *tenant.Store
-	publish   *publish.Store
-	publicURL string       // base URL of the serving port, e.g. http://127.0.0.1:8081
-	web       http.Handler // the embedded SPA app shell, served at /
-
-	// insecureTenant, when non-empty, maps unauthenticated requests to that
-	// tenant. Set only by `serve --insecure` (loopback-only, dev mode).
-	insecureTenant string
+	Deps
 }
 
-func New(db *store.DB, log *eventlog.Log, coord *run.Coordinator, projects *project.Store, tenants *tenant.Store, pub *publish.Store, publicURL, insecureTenant string, web http.Handler) *API {
-	return &API{db: db, log: log, coord: coord, projects: projects, tenants: tenants, publish: pub, publicURL: publicURL, insecureTenant: insecureTenant, web: web}
-}
+func New(d Deps) *API { return &API{Deps: d} }
 
 func (a *API) Routes() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { fmt.Fprintln(w, "ok") })
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintln(w, "ok")
+		if a.Unsecured {
+			fmt.Fprintln(w, "warning: --allow-unsecured override active (passwordless login on an exposed address)")
+		}
+	})
+	// Login endpoints are unauthenticated by nature; begin leaks only the
+	// bound tenant's display names, which is the picker's whole purpose.
+	mux.HandleFunc("POST /v1/auth/login/begin", a.loginBegin)
+	mux.HandleFunc("POST /v1/auth/login/complete", a.loginComplete)
+	mux.HandleFunc("POST /v1/auth/logout", a.logout)
+	mux.Handle("GET /v1/auth/me", a.auth(a.me))
 	mux.Handle("POST /v1/projects", a.auth(a.createProject))
 	mux.Handle("GET /v1/projects", a.auth(a.listProjects))
 	mux.Handle("GET /v1/projects/{id}/versions", a.auth(a.listVersions))
@@ -68,17 +95,72 @@ func (a *API) Routes() http.Handler {
 	mux.Handle("GET /v1/runs/{id}", a.auth(a.getRun))
 	// The web client app shell at / (and its static assets). Unauthenticated —
 	// it carries no tenant data; the client authenticates its own /v1 calls.
-	if a.web != nil {
-		mux.Handle("/", a.web)
+	if a.Web != nil {
+		mux.Handle("/", a.Web)
 	}
 	return mux
+}
+
+// --- human login (components.md §11: drivers claim, the service mints) ---
+
+func (a *API) loginBegin(w http.ResponseWriter, r *http.Request) {
+	flow, err := a.Identity.BeginLogin(r.Context())
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, flow)
+}
+
+func (a *API) loginComplete(w http.ResponseWriter, r *http.Request) {
+	var req identity.CompleteLoginRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.FlowID == "" {
+		httpError(w, http.StatusBadRequest, "body must be {\"flowId\": \"...\", \"params\": {...}}")
+		return
+	}
+	sess, err := a.Identity.CompleteLogin(r.Context(), req)
+	switch {
+	case errors.Is(err, identity.ErrUnknownFlow):
+		httpError(w, http.StatusBadRequest, "that sign-in attempt expired — please pick your account again")
+		return
+	case errors.Is(err, identity.ErrDisabled), errors.Is(err, identity.ErrUnauthorized):
+		httpError(w, http.StatusUnauthorized, "that account cannot sign in")
+		return
+	case err != nil:
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name: SessionCookie, Value: sess.Token, Path: "/",
+		Expires: sess.ExpiresAt, HttpOnly: true, SameSite: http.SameSiteLaxMode,
+	})
+	p, err := a.Identity.Authenticate(r.Context(), sess.Token)
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, p)
+}
+
+func (a *API) logout(w http.ResponseWriter, r *http.Request) {
+	if c, err := r.Cookie(SessionCookie); err == nil && c.Value != "" {
+		a.Identity.RevokeSession(r.Context(), c.Value)
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name: SessionCookie, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteLaxMode,
+	})
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (a *API) me(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, principal(r))
 }
 
 // sessionOfProject returns a project's (single, M0/M1) session, for attaching
 // publish lifecycle events to the log.
 func (a *API) sessionOfProject(ctx context.Context, projectID string) (string, error) {
 	var sessionID string
-	err := a.db.R.QueryRowContext(ctx, `SELECT id FROM sessions WHERE project_id = ? ORDER BY created_at LIMIT 1`, projectID).Scan(&sessionID)
+	err := a.DB.R.QueryRowContext(ctx, `SELECT id FROM sessions WHERE project_id = ? ORDER BY created_at LIMIT 1`, projectID).Scan(&sessionID)
 	return sessionID, err
 }
 
@@ -86,7 +168,7 @@ func (a *API) resolveVersion(ctx context.Context, projectID, requested string) (
 	if requested != "" {
 		return requested, nil
 	}
-	return a.projects.Latest(ctx, projectID)
+	return a.Projects.Latest(ctx, projectID)
 }
 
 func (a *API) publishProject(w http.ResponseWriter, r *http.Request) {
@@ -104,14 +186,14 @@ func (a *API) publishProject(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "no version to publish")
 		return
 	}
-	live, err := a.publish.Publish(r.Context(), projectID, versionID)
+	live, err := a.Publish.Publish(r.Context(), projectID, versionID)
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	url := a.publicURL + "/sites/" + live.Slug + "/"
+	url := a.PublicURL + "/sites/" + live.Slug + "/"
 	a.appendProjectEvent(r.Context(), projectID, "publish.completed",
-		"Your site is live.", map[string]string{"versionId": versionID, "url": url})
+		"Your site is live.", actor(r), map[string]string{"versionId": versionID, "url": url})
 	writeJSON(w, http.StatusOK, map[string]string{"url": url, "versionId": versionID})
 }
 
@@ -121,7 +203,7 @@ func (a *API) rollbackProject(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusNotFound, "unknown project")
 		return
 	}
-	live, err := a.publish.Rollback(r.Context(), projectID)
+	live, err := a.Publish.Rollback(r.Context(), projectID)
 	if errors.Is(err, publish.ErrNoParent) || errors.Is(err, publish.ErrNotPublished) {
 		httpError(w, http.StatusConflict, "nothing to roll back to")
 		return
@@ -129,9 +211,9 @@ func (a *API) rollbackProject(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	url := a.publicURL + "/sites/" + live.Slug + "/"
+	url := a.PublicURL + "/sites/" + live.Slug + "/"
 	a.appendProjectEvent(r.Context(), projectID, "publish.rolled_back",
-		"Your site was rolled back to the previous version.", map[string]string{"versionId": live.VersionID, "url": url})
+		"Your site was rolled back to the previous version.", actor(r), map[string]string{"versionId": live.VersionID, "url": url})
 	writeJSON(w, http.StatusOK, map[string]string{"url": url, "versionId": live.VersionID})
 }
 
@@ -146,13 +228,13 @@ func (a *API) previewURL(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "no version to preview")
 		return
 	}
-	secret, err := a.publish.EnsurePreviewSecret(r.Context(), projectID)
+	secret, err := a.Publish.EnsurePreviewSecret(r.Context(), projectID)
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{
-		"url":       a.publicURL + "/preview/" + projectID + "/" + secret + "/" + versionID + "/",
+		"url":       a.PublicURL + "/preview/" + projectID + "/" + secret + "/" + versionID + "/",
 		"versionId": versionID,
 	})
 }
@@ -168,7 +250,7 @@ func (a *API) exportProject(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "no version to export")
 		return
 	}
-	files, err := a.projects.VersionFiles(r.Context(), projectID, versionID)
+	files, err := a.Projects.VersionFiles(r.Context(), projectID, versionID)
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -178,7 +260,7 @@ func (a *API) exportProject(w http.ResponseWriter, r *http.Request) {
 	zw := zip.NewWriter(w)
 	defer zw.Close()
 	for _, f := range files {
-		blob, err := a.projects.Open(f.BlobSHA)
+		blob, err := a.Projects.Open(f.BlobSHA)
 		if err != nil {
 			return
 		}
@@ -192,61 +274,77 @@ func (a *API) exportProject(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (a *API) appendProjectEvent(ctx context.Context, projectID, typ, userText string, detail any) {
+func (a *API) appendProjectEvent(ctx context.Context, projectID, typ, userText, eventActor string, detail any) {
 	sessionID, err := a.sessionOfProject(ctx, projectID)
 	if err != nil {
 		return
 	}
-	evs, err := a.log.Append(ctx, sessionID, []eventlog.NewEvent{{Type: typ, UserText: userText, Detail: detail}}, nil)
+	evs, err := a.Log.Append(ctx, sessionID, []eventlog.NewEvent{{Type: typ, UserText: userText, Detail: detail, Actor: eventActor}}, nil)
 	if err == nil {
-		a.log.Publish(sessionID, evs)
+		a.Log.Publish(sessionID, evs)
 	}
 }
 
-// auth resolves the bearer token to a tenant and stores it in the context.
+// auth resolves the caller to a Principal — the single chokepoint for every
+// credential kind: bearer API token (programmatic), web-session cookie
+// (human), or the --insecure dev mapping. Handlers never see how the caller
+// authenticated; they consume the Principal.
 func (a *API) auth(next http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		header := r.Header.Get("Authorization")
-		if header == "" && a.insecureTenant != "" {
-			next(w, r.WithContext(context.WithValue(r.Context(), tenantKey, a.insecureTenant)))
+		p, err := a.resolvePrincipal(r)
+		if errors.Is(err, errNoCredential) {
+			httpError(w, http.StatusUnauthorized, "missing credentials")
 			return
-		}
-		token, ok := strings.CutPrefix(header, "Bearer ")
-		if !ok || token == "" {
-			// EventSource cannot set an Authorization header, so the SSE stream
-			// accepts the token as a query param (T1 posture — same secrecy as
-			// the bearer header over a trusted/loopback link; tightened at T2).
-			if q := r.URL.Query().Get("token"); q != "" {
-				token, ok = q, true
-			}
-		}
-		if !ok || token == "" {
-			httpError(w, http.StatusUnauthorized, "missing bearer token")
-			return
-		}
-		tid, err := a.tenants.Authenticate(r.Context(), token)
-		if errors.Is(err, tenant.ErrUnauthorized) {
-			httpError(w, http.StatusUnauthorized, "invalid or revoked token")
+		} else if errors.Is(err, tenant.ErrUnauthorized) || errors.Is(err, identity.ErrUnauthorized) {
+			httpError(w, http.StatusUnauthorized, "invalid or revoked credentials")
 			return
 		} else if err != nil {
 			httpError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		next(w, r.WithContext(context.WithValue(r.Context(), tenantKey, tid)))
+		next(w, r.WithContext(context.WithValue(r.Context(), principalKey, p)))
 	})
+}
+
+var errNoCredential = errors.New("no credential presented")
+
+func (a *API) resolvePrincipal(r *http.Request) (identity.Principal, error) {
+	// 1. Bearer API token (or its SSE query-param form — EventSource cannot
+	//    set an Authorization header; T1 posture, tightened at T2. Browsers
+	//    don't need it: same-origin EventSource sends the session cookie).
+	token, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if token == "" {
+		token = r.URL.Query().Get("token")
+	}
+	if token != "" {
+		tid, err := a.Tenants.Authenticate(r.Context(), token)
+		if err != nil {
+			return identity.Principal{}, err
+		}
+		return identity.Principal{TenantID: tid, Method: "api-token", Assurance: identity.Proven}, nil
+	}
+	// 2. Web session cookie (human login).
+	if c, err := r.Cookie(SessionCookie); err == nil && c.Value != "" {
+		return a.Identity.Authenticate(r.Context(), c.Value)
+	}
+	// 3. Dev mode.
+	if a.InsecureTenant != "" {
+		return identity.Principal{TenantID: a.InsecureTenant, Method: "insecure", Assurance: identity.Attributed}, nil
+	}
+	return identity.Principal{}, errNoCredential
 }
 
 // ownsProject / ownsSession return sql.ErrNoRows for both "does not exist"
 // and "belongs to someone else" — callers turn either into a 404.
 func (a *API) ownsProject(ctx context.Context, tid, projectID string) error {
 	var one int
-	return a.db.R.QueryRowContext(ctx,
+	return a.DB.R.QueryRowContext(ctx,
 		`SELECT 1 FROM projects WHERE id = ? AND tenant_id = ?`, projectID, tid).Scan(&one)
 }
 
 func (a *API) sessionProject(ctx context.Context, tid, sessionID string) (string, error) {
 	var projectID string
-	err := a.db.R.QueryRowContext(ctx,
+	err := a.DB.R.QueryRowContext(ctx,
 		`SELECT project_id FROM sessions WHERE id = ? AND tenant_id = ?`, sessionID, tid).Scan(&projectID)
 	return projectID, err
 }
@@ -267,7 +365,7 @@ func (a *API) createProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p := Project{ID: "p_" + ulid.Make().String(), Name: body.Name, SessionID: "s_" + ulid.Make().String()}
-	err := a.db.Write(r.Context(), func(tx *sql.Tx) error {
+	err := a.DB.Write(r.Context(), func(tx *sql.Tx) error {
 		now := time.Now().UTC().Format(time.RFC3339Nano)
 		if _, err := tx.Exec(`INSERT INTO projects (id, tenant_id, name, created_at) VALUES (?,?,?,?)`, p.ID, tid, p.Name, now); err != nil {
 			return err
@@ -283,7 +381,7 @@ func (a *API) createProject(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) listProjects(w http.ResponseWriter, r *http.Request) {
-	rows, err := a.db.R.QueryContext(r.Context(), `
+	rows, err := a.DB.R.QueryContext(r.Context(), `
 		SELECT p.id, p.name, s.id FROM projects p JOIN sessions s ON s.project_id = p.id
 		WHERE p.tenant_id = ? ORDER BY p.created_at`, tenantID(r))
 	if err != nil {
@@ -313,7 +411,7 @@ func (a *API) listVersions(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusNotFound, "unknown project")
 		return
 	}
-	versions, err := a.projects.ListVersions(r.Context(), projectID)
+	versions, err := a.Projects.ListVersions(r.Context(), projectID)
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -345,7 +443,7 @@ func (a *API) postMessage(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	ref, appended, err := a.submit(r.Context(), sessionID, projectID, idemKey, body.Text)
+	ref, appended, err := a.submit(r.Context(), sessionID, projectID, idemKey, body.Text, actor(r))
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -360,10 +458,10 @@ func (a *API) postMessage(w http.ResponseWriter, r *http.Request) {
 // submit is atomic: idempotency check, user.message append, and run
 // registration commit in one transaction (S6). Publish and worker wake-up
 // happen after commit.
-func (a *API) submit(ctx context.Context, sessionID, projectID, idemKey, text string) (run.RunRef, bool, error) {
+func (a *API) submit(ctx context.Context, sessionID, projectID, idemKey, text, eventActor string) (run.RunRef, bool, error) {
 	var ref run.RunRef
 	var appended []eventlog.Event
-	err := a.db.Write(ctx, func(tx *sql.Tx) error {
+	err := a.DB.Write(ctx, func(tx *sql.Tx) error {
 		var existing string
 		err := tx.QueryRow(
 			`SELECT run_id FROM idempotency_keys WHERE session_id = ? AND key = ?`, sessionID, idemKey).Scan(&existing)
@@ -374,25 +472,25 @@ func (a *API) submit(ctx context.Context, sessionID, projectID, idemKey, text st
 		if !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
-		appended, err = a.log.AppendTx(tx, sessionID, []eventlog.NewEvent{{Type: harness.EvUserMessage, UserText: text}}, nil)
+		appended, err = a.Log.AppendTx(tx, sessionID, []eventlog.NewEvent{{Type: harness.EvUserMessage, UserText: text, Actor: eventActor}}, nil)
 		if err != nil {
 			return err
 		}
-		ref, err = a.coord.RequestRunTx(tx, sessionID, projectID, appended[0].ID, idemKey)
+		ref, err = a.Coord.RequestRunTx(tx, sessionID, projectID, appended[0].ID, idemKey)
 		return err
 	})
 	if err != nil {
 		return run.RunRef{}, false, err
 	}
 	if len(appended) > 0 {
-		a.log.Publish(sessionID, appended)
-		a.coord.Poke()
+		a.Log.Publish(sessionID, appended)
+		a.Coord.Poke()
 	}
 	return ref, len(appended) > 0, nil
 }
 
 func (a *API) getRun(w http.ResponseWriter, r *http.Request) {
-	got, err := a.coord.Get(r.Context(), r.PathValue("id"))
+	got, err := a.Coord.Get(r.Context(), r.PathValue("id"))
 	if errors.Is(err, run.ErrNotFound) {
 		httpError(w, http.StatusNotFound, "unknown run")
 		return
@@ -420,7 +518,7 @@ func (a *API) streamEvents(w http.ResponseWriter, r *http.Request) {
 	after, _ := strconv.ParseInt(r.URL.Query().Get("after"), 10, 64)
 
 	if r.URL.Query().Get("stream") == "false" {
-		evs, err := a.log.Read(r.Context(), sessionID, after, nil)
+		evs, err := a.Log.Read(r.Context(), sessionID, after, nil)
 		if err != nil {
 			httpError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -442,7 +540,7 @@ func (a *API) streamEvents(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
 
-	ch, cancel := a.log.Subscribe(r.Context(), sessionID, after)
+	ch, cancel := a.Log.Subscribe(r.Context(), sessionID, after)
 	defer cancel()
 	heartbeat := time.NewTicker(15 * time.Second)
 	defer heartbeat.Stop()
