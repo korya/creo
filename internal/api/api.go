@@ -180,7 +180,12 @@ func (a *API) loginComplete(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) logout(w http.ResponseWriter, r *http.Request) {
 	if c, err := r.Cookie(SessionCookie); err == nil && c.Value != "" {
-		a.Identity.RevokeSession(r.Context(), c.Value)
+		// A failed revoke leaves the session usable server-side while the
+		// browser believes it signed out — the one failure here worth an
+		// operator's attention.
+		if err := a.Identity.RevokeSession(r.Context(), c.Value); err != nil {
+			slog.Error("sign-out did not revoke the session", "err", err)
+		}
 	}
 	http.SetCookie(w, &http.Cookie{
 		Name: SessionCookie, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteLaxMode,
@@ -247,7 +252,8 @@ func (a *API) publishProject(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		VersionID string `json:"versionId"`
 	}
-	json.NewDecoder(r.Body).Decode(&body)
+	// The body is optional here — no version means "the latest one".
+	_ = json.NewDecoder(r.Body).Decode(&body)
 	versionID, err := a.resolveVersion(r.Context(), projectID, body.VersionID)
 	if err != nil || versionID == "" {
 		httpError(w, http.StatusBadRequest, "There's nothing to put online yet — describe your site first.")
@@ -324,21 +330,36 @@ func (a *API) exportProject(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/zip")
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", projectID+".zip"))
+	// The response is already committed, so a mid-stream failure cannot become
+	// an HTTP error. What it must not do is finish quietly: zw.Close writes the
+	// central directory, so an abandoned export still yields a *valid* zip that
+	// is simply missing files. A user opening it would see a plausible,
+	// incomplete copy of their site and never know (AC-15).
 	zw := zip.NewWriter(w)
-	defer zw.Close()
 	for _, f := range files {
-		blob, err := a.Projects.Open(f.BlobSHA)
-		if err != nil {
-			return
+		if err := copyBlobInto(zw, a, f.Path, f.BlobSHA); err != nil {
+			slog.Error("export truncated", "project", projectID, "version", versionID,
+				"path", f.Path, "err", err)
+			return // deliberately no zw.Close(): a torn stream beats a tidy lie
 		}
-		fw, err := zw.Create(f.Path)
-		if err != nil {
-			blob.Close()
-			return
-		}
-		io.Copy(fw, blob)
-		blob.Close()
 	}
+	if err := zw.Close(); err != nil {
+		slog.Error("export could not be finalised", "project", projectID, "version", versionID, "err", err)
+	}
+}
+
+func copyBlobInto(zw *zip.Writer, a *API, path, sha string) error {
+	blob, err := a.Projects.Open(sha)
+	if err != nil {
+		return err
+	}
+	defer blob.Close()
+	fw, err := zw.Create(path)
+	if err != nil {
+		return err
+	}
+	_, err = io.Copy(fw, blob)
+	return err
 }
 
 func (a *API) appendProjectEvent(ctx context.Context, projectID, typ, userText, eventActor string, detail any) {
@@ -588,7 +609,7 @@ func (a *API) waitingRun(ctx context.Context, sessionID string) (runID, toolID s
 		return "", "", false
 	}
 	var d harness.InputRequestDetail
-	json.Unmarshal(evs[len(evs)-1].Detail, &d)
+	_ = json.Unmarshal(evs[len(evs)-1].Detail, &d) // our own payload; a zero value degrades gracefully
 	return runID, d.ToolID, true
 }
 
@@ -701,7 +722,7 @@ func (a *API) getSession(w http.ResponseWriter, r *http.Request) {
 	if _, _, ok := a.waitingRun(r.Context(), sessionID); ok {
 		if evs, err := a.Log.Read(r.Context(), sessionID, 0, []string{harness.EvInputRequested}); err == nil && len(evs) > 0 {
 			var d harness.InputRequestDetail
-			json.Unmarshal(evs[len(evs)-1].Detail, &d)
+			_ = json.Unmarshal(evs[len(evs)-1].Detail, &d) // our own payload; a zero value degrades gracefully
 			out["question"] = map[string]any{"text": d.Question, "choices": d.Choices}
 		}
 	}
@@ -784,7 +805,8 @@ func (a *API) streamEvents(w http.ResponseWriter, r *http.Request) {
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
+	// The status is already sent; a write failure here has no recovery path.
+	_ = json.NewEncoder(w).Encode(v)
 }
 
 func httpError(w http.ResponseWriter, status int, msg string) {
