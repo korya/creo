@@ -29,6 +29,7 @@ type Event struct {
 	Type      string          `json:"type"`
 	UserText  string          `json:"userText,omitempty"`
 	Detail    json.RawMessage `json:"detail,omitempty"`
+	Actor     string          `json:"actor,omitempty"` // user id of the principal that caused this event; "" = platform
 	CreatedAt time.Time       `json:"createdAt"`
 }
 
@@ -36,7 +37,8 @@ type NewEvent struct {
 	Type     string
 	RunID    string
 	UserText string
-	Detail   any // marshalled to JSON; nil -> {}
+	Detail   any    // marshalled to JSON; nil -> {}
+	Actor    string // attribution (R-SEC-2); "" for platform-emitted events
 }
 
 // Lease fences appends: RunID+Gen must match the run's current lease.
@@ -118,11 +120,12 @@ func (l *Log) AppendTx(tx *sql.Tx, sessionID string, evs []NewEvent, lease *Leas
 				Type:      ev.Type,
 				UserText:  ev.UserText,
 				Detail:    detail,
+				Actor:     ev.Actor,
 				CreatedAt: now,
 			}
 			_, err := tx.Exec(
-				`INSERT INTO events (session_id, seq, id, run_id, type, user_text, detail, created_at) VALUES (?,?,?,?,?,?,?,?)`,
-				e.SessionID, e.Seq, e.ID, e.RunID, e.Type, e.UserText, string(e.Detail), e.CreatedAt.Format(time.RFC3339Nano),
+				`INSERT INTO events (session_id, seq, id, run_id, type, user_text, detail, actor, created_at) VALUES (?,?,?,?,?,?,?,?,?)`,
+				e.SessionID, e.Seq, e.ID, e.RunID, e.Type, e.UserText, string(e.Detail), e.Actor, e.CreatedAt.Format(time.RFC3339Nano),
 			)
 			if err != nil {
 				return err
@@ -154,7 +157,7 @@ func (l *Log) Publish(sessionID string, evs []Event) {
 
 // Read returns events with seq > after, optionally filtered by type.
 func (l *Log) Read(ctx context.Context, sessionID string, after int64, types []string) ([]Event, error) {
-	q := `SELECT id, seq, COALESCE(run_id,''), type, user_text, detail, created_at FROM events WHERE session_id = ? AND seq > ?`
+	q := `SELECT id, seq, COALESCE(run_id,''), type, user_text, detail, actor, created_at FROM events WHERE session_id = ? AND seq > ?`
 	args := []any{sessionID, after}
 	if len(types) > 0 {
 		q += ` AND type IN (?` + repeat(",?", len(types)-1) + `)`
@@ -172,7 +175,7 @@ func (l *Log) Read(ctx context.Context, sessionID string, after int64, types []s
 	for rows.Next() {
 		var e Event
 		var detail, created string
-		if err := rows.Scan(&e.ID, &e.Seq, &e.RunID, &e.Type, &e.UserText, &detail, &created); err != nil {
+		if err := rows.Scan(&e.ID, &e.Seq, &e.RunID, &e.Type, &e.UserText, &detail, &e.Actor, &created); err != nil {
 			return nil, err
 		}
 		e.SessionID = sessionID
