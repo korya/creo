@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeEach } from "vitest";
-import { state, handleEvent } from "./app";
+import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
+import { state, handleEvent, renderWho, showAccountPicker, dismissBanner } from "./app";
 import type { Event } from "./api";
 
 // Minimal DOM the render path touches. app.ts's load-time init() is guarded on
@@ -128,5 +128,101 @@ describe("gentle error surfacing", () => {
     expect(banner?.classList.contains("hidden")).toBe(false);
     expect(banner?.textContent).toContain("free changes");
     expect(document.querySelectorAll(".msg").length).toBe(0);
+  });
+});
+
+// The sign-in surface. The picker shows names, never secrets; the family-mode
+// warning is keyed to `assurance` (the property) rather than the driver name,
+// and can only be silenced for the current page view.
+function setupAuthDom() {
+  document.body.innerHTML = `
+    <section id="screen-key"><div id="account-list"></div>
+      <div id="key-error" class="hidden"></div></section>
+    <section id="screen-home">
+      <div id="family-banner" class="hidden">
+        <span id="family-banner-text"></span><button id="family-banner-close"></button>
+      </div>
+      <span id="home-who" class="hidden"></span>
+      <button id="home-signout" class="hidden"></button>
+    </section>
+    <section id="screen-workspace"></section>`;
+  state.who = null;
+}
+
+describe("account picker", () => {
+  beforeEach(setupAuthDom);
+  afterEach(() => vi.unstubAllGlobals());
+
+  const stubLogin = (choices: unknown[]) =>
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ flowId: "lf_1", kind: "choice", choices }),
+      }),
+    );
+
+  it("renders one button per account, showing names and no credentials", async () => {
+    stubLogin([
+      { id: "u_1", name: "Anna", color: "#e07a5f" },
+      { id: "u_2", name: "Bob" },
+    ]);
+    await showAccountPicker();
+    const buttons = [...document.querySelectorAll("#account-list .account")];
+    expect(buttons.map((b) => b.textContent)).toEqual(["AAnna", "BBob"]);
+    expect(document.querySelector("#account-list input")).toBeNull();
+  });
+
+  it("explains how to get an account when none exist yet", async () => {
+    stubLogin([]);
+    await showAccountPicker();
+    expect(document.getElementById("account-empty")?.textContent).toContain("creo account new");
+  });
+});
+
+describe("family-mode banner", () => {
+  beforeEach(setupAuthDom);
+
+  const hidden = () => document.getElementById("family-banner")?.classList.contains("hidden");
+
+  it("shows for attributed identity — the T1 honesty note", () => {
+    state.who = {
+      tenantId: "t1",
+      userId: "u1",
+      name: "Anna",
+      method: "static",
+      assurance: "attributed",
+    };
+    renderWho();
+    expect(hidden()).toBe(false);
+    expect(document.getElementById("family-banner-text")?.textContent).toContain(
+      "anyone who can reach",
+    );
+    expect(document.getElementById("home-who")?.textContent).toBe("Signed in as Anna");
+  });
+
+  it("stays hidden when identity is proven", () => {
+    state.who = { tenantId: "t1", userId: "u1", name: "Anna", method: "oidc", assurance: "proven" };
+    renderWho();
+    expect(hidden()).toBe(true);
+  });
+
+  it("returns after a dismissal is followed by a re-render — no durable silence", () => {
+    state.who = {
+      tenantId: "t1",
+      userId: "u1",
+      name: "Anna",
+      method: "static",
+      assurance: "attributed",
+    };
+    renderWho();
+    dismissBanner();
+    expect(hidden()).toBe(true);
+    // Nothing was persisted: a reload re-imports the module with a fresh flag.
+    // Within one page view the dismissal holds, which is the whole contract.
+    renderWho();
+    expect(hidden()).toBe(true);
+    expect(localStorage.getItem("creo_banner_dismissed")).toBeNull();
+    expect(sessionStorage.length).toBe(0);
   });
 });

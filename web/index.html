@@ -247,7 +247,7 @@
         font-size: 13px;
         margin-top: 14px;
       }
-      #key-skip {
+      #key-operator {
         display: block;
         margin-top: 18px;
         font-size: 13.5px;
@@ -255,6 +255,91 @@
         background: none;
         text-decoration: underline;
         text-underline-offset: 3px;
+      }
+      /* The account picker: names, not credentials. */
+      .account {
+        display: flex;
+        align-items: center;
+        gap: 13px;
+        width: 100%;
+        padding: 12px 14px;
+        margin-bottom: 9px;
+        border: 1.5px solid var(--line);
+        border-radius: 14px;
+        background: var(--paper);
+        font-family: var(--sans);
+        font-size: 16px;
+        font-weight: 600;
+        color: var(--ink);
+        text-align: left;
+        cursor: pointer;
+        transition:
+          border-color 0.15s ease,
+          transform 0.1s ease;
+      }
+      .account:hover {
+        border-color: var(--marigold);
+        transform: translateY(-1px);
+      }
+      .account .face {
+        width: 34px;
+        height: 34px;
+        border-radius: 50%;
+        display: grid;
+        place-items: center;
+        color: #fff;
+        font-size: 15px;
+        font-weight: 700;
+        flex: none;
+      }
+      #account-empty {
+        color: var(--ink-mute);
+        font-size: 14px;
+        line-height: 1.55;
+        background: var(--paper);
+        border: 1px dashed var(--line);
+        border-radius: 12px;
+        padding: 14px;
+      }
+      #account-empty code {
+        font-family: var(--mono, monospace);
+        font-size: 13px;
+        background: var(--card);
+        padding: 1px 5px;
+        border-radius: 5px;
+      }
+      /* Family-mode notice: shown whenever identity is attributed, not proven.
+         Dismissal is deliberately in-memory only — it returns on every reload
+         and in every new tab (decided 2026-08-05). */
+      #family-banner {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 9px 16px;
+        background: var(--marigold-soft);
+        color: var(--marigold-ink);
+        font-size: 13px;
+        border-bottom: 1px solid var(--line);
+      }
+      #family-banner .grow {
+        flex: 1;
+      }
+      #family-banner button {
+        background: none;
+        color: inherit;
+        font-size: 17px;
+        line-height: 1;
+        padding: 2px 6px;
+        opacity: 0.6;
+      }
+      #family-banner button:hover {
+        opacity: 1;
+      }
+      #home-who {
+        font-size: 14px;
+        font-weight: 600;
+        color: var(--muted);
+        margin-right: 12px;
       }
 
       /* =================== YOUR SITES =================== */
@@ -936,33 +1021,42 @@
     </style>
   </head>
   <body>
-    <!-- =================== SITE KEY =================== -->
+    <!-- =================== WHO'S THIS? =================== -->
     <section id="screen-key" class="hidden">
       <div class="card">
         <div class="brand"><span class="dot"></span><span class="name">Creo</span></div>
-        <h1>Welcome in</h1>
-        <p>Enter your site key to reach your websites. It keeps your work private to you.</p>
-        <label for="key-input">Your site key</label>
-        <input
-          id="key-input"
-          class="field"
-          type="password"
-          placeholder="paste your key"
-          autocomplete="off"
-        />
+        <h1>Who's building today?</h1>
+        <p>Pick your name to open your websites.</p>
+        <div id="account-list"></div>
         <div id="key-error" class="hidden"></div>
-        <div style="margin-top: 20px">
-          <button id="key-go" class="btn" style="width: 100%">Open my sites</button>
+        <div id="key-token" class="hidden">
+          <label for="key-input">Access token</label>
+          <input
+            id="key-input"
+            class="field"
+            type="password"
+            placeholder="paste your token"
+            autocomplete="off"
+          />
+          <div style="margin-top: 14px">
+            <button id="key-go" class="btn" style="width: 100%">Open my sites</button>
+          </div>
         </div>
-        <button id="key-skip">I'm on my own computer — no key needed</button>
+        <button id="key-operator">Sign in with a token instead</button>
       </div>
     </section>
 
     <!-- =================== YOUR SITES =================== -->
     <section id="screen-home" class="hidden">
+      <div id="family-banner" class="hidden">
+        <span id="family-banner-text"></span>
+        <span class="grow"></span>
+        <button id="family-banner-close" title="Hide until the page reloads">×</button>
+      </div>
       <div class="home-top">
         <div class="brand"><span class="dot"></span><span class="name">Creo</span></div>
         <span class="grow"></span>
+        <span id="home-who" class="hidden"></span>
         <button id="home-signout" class="btn ghost small hidden">Sign out</button>
       </div>
       <div class="home-body">
