@@ -32,6 +32,13 @@ spikes/              throwaway experiment code; never imported by the core
 scripts/             demo and operational scripts
 ```
 
+## Getting set up (macOS)
+
+`brew bundle` installs the toolchain: Go, `just`, Node 24, golangci-lint, `gh`.
+The web client's own toolchain (vite-plus, vitest) is pinned in
+`web/package.json` and comes from `npm ci` — deliberately not duplicated in the
+Brewfile.
+
 ## Canonical commands
 
 `justfile` is the task runner — `just` on its own lists every recipe. It wraps

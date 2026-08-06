@@ -37,13 +37,17 @@ jobs:
             | bash -s -- --to "$HOME/.local/bin"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
-      # Same pinned version the justfile installs, so a lint failure here is
-      # always reproducible with `just check` locally. PATH is set explicitly
-      # rather than assuming setup-go exports GOPATH/bin.
-      - name: Install golangci-lint
-        run: |
-          just install-lint
-          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      # install-only: the action installs and caches the binary, but `just
+      # check-ci` is what runs it — CI must exercise the same recipe a
+      # developer does, or the two drift.
+      #
+      # This version is the one that gates merges. Homebrew tracks latest, so a
+      # local golangci-lint can be newer; when they disagree, this pin wins and
+      # the Brewfile says how to match it locally.
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.12.2
+          install-only: true
 
       - name: Install web dependencies
         working-directory: web
