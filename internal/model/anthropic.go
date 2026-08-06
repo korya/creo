@@ -34,7 +34,7 @@ func (a *Anthropic) Complete(ctx context.Context, req Request) (*Completion, err
 		params.System = []anthropic.TextBlockParam{{Text: req.System}}
 	}
 	for _, t := range req.Tools {
-		properties, _ := t.InputSchema["properties"]
+		properties := t.InputSchema["properties"]
 		var required []string
 		if r, ok := t.InputSchema["required"].([]string); ok {
 			required = r

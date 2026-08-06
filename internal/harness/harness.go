@@ -251,7 +251,8 @@ func (h *Harness) emitQuestion(ctx context.Context, r *run.Run, lease *eventlog.
 		Choices  []string `json:"choices"`
 	}
 	if len(call.ToolInput) > 0 {
-		json.Unmarshal(call.ToolInput, &in)
+		// A malformed question falls through to the default prompt below.
+		_ = json.Unmarshal(call.ToolInput, &in)
 	}
 	if strings.TrimSpace(in.Question) == "" {
 		in.Question = "Could you tell me a bit more about what you'd like?"
@@ -288,7 +289,7 @@ func (h *Harness) EmitFailure(ctx context.Context, r *run.Run, cause error) {
 	case errors.Is(cause, tenant.ErrStorageExceeded):
 		text = "There's no room left to save more changes. Your site is safe as it is — ask whoever runs this server for more space, or remove a few images to free some up."
 	}
-	h.Log.Append(ctx, r.SessionID, []eventlog.NewEvent{{
+	_, _ = h.Log.Append(ctx, r.SessionID, []eventlog.NewEvent{{
 		Type: EvRunFailed, RunID: r.ID,
 		UserText: text,
 		Detail:   map[string]string{"error": cause.Error()},
@@ -303,7 +304,7 @@ func toolPath(call model.Block) string {
 	var in struct {
 		Path string `json:"path"`
 	}
-	json.Unmarshal(call.ToolInput, &in)
+	_ = json.Unmarshal(call.ToolInput, &in) // absent path just means no progress phrase
 	return in.Path
 }
 

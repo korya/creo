@@ -210,7 +210,9 @@ func (s *Service) Authenticate(ctx context.Context, token string) (Principal, er
 	}
 	if time.Until(expires) < renewBelow {
 		newExp := time.Now().UTC().Add(SessionTTL).Format(time.RFC3339Nano)
-		s.db.Write(ctx, func(tx *sql.Tx) error {
+		// Best-effort: a failed roll-forward only means this session expires on
+		// its original schedule, and the next request tries again.
+		_ = s.db.Write(ctx, func(tx *sql.Tx) error {
 			_, err := tx.Exec(`UPDATE web_sessions SET expires_at = ? WHERE id = ? AND revoked_at IS NULL`, newExp, sessID)
 			return err
 		})

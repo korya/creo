@@ -124,7 +124,7 @@ func cmdTenant(args []string) error {
 		if err != nil {
 			return err
 		}
-		defer db.Close()
+		defer func() { _ = db.Close() }()
 		var limit *int64
 		if *daily > 0 {
 			limit = daily
@@ -146,7 +146,7 @@ func cmdTenant(args []string) error {
 		if err != nil {
 			return err
 		}
-		defer db.Close()
+		defer func() { _ = db.Close() }()
 		tenants, err := tenant.New(db).List(context.Background())
 		if err != nil {
 			return err
@@ -187,7 +187,7 @@ func cmdToken(args []string) error {
 		if err != nil {
 			return err
 		}
-		defer db.Close()
+		defer func() { _ = db.Close() }()
 		plaintext, id, err := tenant.New(db).CreateToken(context.Background(), tenantID, *name)
 		if err != nil {
 			return err
@@ -205,7 +205,7 @@ func cmdToken(args []string) error {
 		if err != nil {
 			return err
 		}
-		defer db.Close()
+		defer func() { _ = db.Close() }()
 		if err := tenant.New(db).RevokeToken(context.Background(), tokenID); err != nil {
 			return err
 		}
@@ -238,7 +238,7 @@ func cmdAccount(args []string) error {
 		if err != nil {
 			return err
 		}
-		defer db.Close()
+		defer func() { _ = db.Close() }()
 		u, err := identity.CreateUser(context.Background(), db, *tenantID, name, *color)
 		if err != nil {
 			return err
@@ -251,7 +251,7 @@ func cmdAccount(args []string) error {
 		if err != nil {
 			return err
 		}
-		defer db.Close()
+		defer func() { _ = db.Close() }()
 		users, err := identity.ListUsers(context.Background(), db, *tenantID)
 		if err != nil {
 			return err
@@ -274,7 +274,7 @@ func cmdAccount(args []string) error {
 		if err != nil {
 			return err
 		}
-		defer db.Close()
+		defer func() { _ = db.Close() }()
 		if err := identity.DisableUser(context.Background(), db, userID); err != nil {
 			return err
 		}
@@ -611,7 +611,8 @@ func call(method, url string, body any, headers map[string]string, out any) erro
 		var e struct {
 			Error string `json:"error"`
 		}
-		json.NewDecoder(resp.Body).Decode(&e)
+		// Best-effort: a non-JSON error body still leaves the status worth reporting.
+		_ = json.NewDecoder(resp.Body).Decode(&e)
 		return fmt.Errorf("%s: %s", resp.Status, e.Error)
 	}
 	if out != nil {
