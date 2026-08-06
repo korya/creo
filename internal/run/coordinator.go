@@ -20,15 +20,29 @@ import (
 var (
 	ErrLeaseLost = errors.New("lease lost")
 	ErrNotFound  = errors.New("run not found")
+	// ErrNotWaiting is returned when input arrives for a run that is not
+	// waiting for any — a stale second device, or an answer that raced the
+	// user's own cancel.
+	ErrNotWaiting = errors.New("run is not waiting for input")
+	// ErrTerminal is returned when a cancel arrives after the run already
+	// finished. The user's intent is satisfied either way; callers say so.
+	ErrTerminal = errors.New("run already finished")
 )
 
 const (
 	StatusQueued     = "queued"
 	StatusRunning    = "running"
 	StatusRecovering = "recovering"
+	StatusWaiting    = "waiting_for_input"
 	StatusCompleted  = "completed"
 	StatusFailed     = "failed"
+	StatusCancelled  = "cancelled"
 )
+
+// Terminal reports whether a status is final — no worker will touch the run again.
+func Terminal(status string) bool {
+	return status == StatusCompleted || status == StatusFailed || status == StatusCancelled
+}
 
 type Run struct {
 	ID             string
@@ -134,6 +148,10 @@ func (c *Coordinator) Claim(ctx context.Context, workerID string) (*Run, error) 
 			    WHERE o.project_id = r.project_id AND o.id != r.id
 			      AND o.status = ? AND o.lease_expires_at > ?
 			  )
+			  AND NOT EXISTS (
+			    SELECT 1 FROM runs w
+			    WHERE w.project_id = r.project_id AND w.id != r.id AND w.status = ?
+			  )
 			  AND (
 			    SELECT COUNT(*) FROM runs o2
 			    JOIN projects p2 ON p2.id = o2.project_id
@@ -141,7 +159,7 @@ func (c *Coordinator) Claim(ctx context.Context, workerID string) (*Run, error) 
 			      AND o2.status = ? AND o2.lease_expires_at > ?
 			  ) < t.max_concurrent_runs
 			ORDER BY r.created_at
-			LIMIT 1`, StatusQueued, StatusRecovering, StatusRunning, nowStr, StatusRunning, nowStr)
+			LIMIT 1`, StatusQueued, StatusRecovering, StatusRunning, nowStr, StatusWaiting, StatusRunning, nowStr)
 		var r Run
 		var gen int64
 		if err := row.Scan(&r.ID, &r.SessionID, &r.ProjectID, &r.TriggerEventID, &r.Status, &gen); err != nil {
@@ -238,7 +256,91 @@ func (c *Coordinator) Relinquish(ctx context.Context, lease eventlog.Lease) erro
 	return err
 }
 
+// Await parks a run that asked the user a question: the lease is released, so
+// the worker is free and no timer is racing the human. RC-2 still holds — Claim
+// refuses to start another run on a project with a waiting one, because the
+// parked conversation still owns the project.
+//
+// The question event is appended by the harness *before* this call, while its
+// lease is still valid; by the time the run is parked, the log already says
+// what was asked.
+func (c *Coordinator) Await(ctx context.Context, lease eventlog.Lease) error {
+	return c.db.Write(ctx, func(tx *sql.Tx) error {
+		now := time.Now().UTC().Format(time.RFC3339Nano)
+		res, err := tx.Exec(
+			`UPDATE runs SET status = ?, lease_expires_at = '', updated_at = ? WHERE id = ? AND lease_worker = ? AND lease_gen = ? AND status = ?`,
+			StatusWaiting, now, lease.RunID, lease.WorkerID, lease.Gen, StatusRunning,
+		)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return fmt.Errorf("%w: await of run %s gen %d", ErrLeaseLost, lease.RunID, lease.Gen)
+		}
+		return nil
+	})
+}
+
+// Resume returns an answered run to the queue. Any device may call it — the
+// answer belongs to the session, not to the device that asked (AC-5).
+func (c *Coordinator) Resume(ctx context.Context, runID string) error {
+	err := c.db.Write(ctx, func(tx *sql.Tx) error {
+		now := time.Now().UTC().Format(time.RFC3339Nano)
+		res, err := tx.Exec(
+			`UPDATE runs SET status = ?, updated_at = ? WHERE id = ? AND status = ?`,
+			StatusQueued, now, runID, StatusWaiting,
+		)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return fmt.Errorf("%w: run %s", ErrNotWaiting, runID)
+		}
+		return nil
+	})
+	if err == nil {
+		c.Poke()
+	}
+	return err
+}
+
+// Cancel stops a run from any non-terminal state (R-RUN-4). Queued and waiting
+// runs stop immediately. A running one is stopped by flipping its status: the
+// holder's next Renew fails (it requires `running`), which aborts the worker —
+// the same mechanism that makes crash takeover safe, reused rather than
+// duplicated. The project's last committed version stands either way.
+func (c *Coordinator) Cancel(ctx context.Context, runID string) error {
+	err := c.db.Write(ctx, func(tx *sql.Tx) error {
+		var status string
+		if err := tx.QueryRow(`SELECT status FROM runs WHERE id = ?`, runID).Scan(&status); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrNotFound
+			}
+			return err
+		}
+		if Terminal(status) {
+			return fmt.Errorf("%w: run %s is %s", ErrTerminal, runID, status)
+		}
+		// Bumping the generation is what actually stops the holder: its next
+		// append is rejected in storage (SL-3) rather than merely its next
+		// renew. Without this a worker mid-tool-call keeps writing to the log
+		// for up to a renewal interval after the user pressed stop.
+		now := time.Now().UTC().Format(time.RFC3339Nano)
+		_, err := tx.Exec(
+			`UPDATE runs SET status = ?, outcome = ?, lease_gen = lease_gen + 1, lease_worker = '', lease_expires_at = '', updated_at = ? WHERE id = ?`,
+			StatusCancelled, "cancelled by the user", now, runID,
+		)
+		return err
+	})
+	if err == nil {
+		c.Poke() // the project is free again
+	}
+	return err
+}
+
 // RecoverOrphans moves expired-lease running runs to recovering (RC-4, RC-5).
+// Waiting runs are deliberately untouched: they hold no lease and no worker,
+// so there is nothing to expire — a question survives any number of restarts.
 func (c *Coordinator) RecoverOrphans(ctx context.Context) (int64, error) {
 	var n int64
 	err := c.db.Write(ctx, func(tx *sql.Tx) error {
