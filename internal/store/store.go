@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"embed"
+	"errors"
 	"fmt"
 	"io/fs"
 	"sort"
@@ -30,13 +31,13 @@ func Open(path string) (*DB, error) {
 	w.SetMaxOpenConns(1)
 	r, err := sql.Open("sqlite", dsn)
 	if err != nil {
-		w.Close()
+		_ = w.Close()
 		return nil, err
 	}
 	r.SetMaxOpenConns(4)
 	db := &DB{W: w, R: r}
 	if err := db.migrate(); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
 	return db, nil
@@ -84,7 +85,8 @@ func (db *DB) Write(ctx context.Context, fn func(tx *sql.Tx) error) error {
 	return tx.Commit()
 }
 
+// Close shuts both pools down and reports either failure. Returning only the
+// writer's error would let a failed read-pool close pass for success.
 func (db *DB) Close() error {
-	db.R.Close()
-	return db.W.Close()
+	return errors.Join(db.R.Close(), db.W.Close())
 }
