@@ -7,6 +7,7 @@ import {
   Api,
   ApiError,
   isUnauthorized,
+  userMessage,
   type Event,
   type LoginFlow,
   type Principal,
@@ -312,7 +313,7 @@ async function answer(text: string) {
     if (state.runId) await api.answer(state.runId, text);
     else await api.sendMessage(state.sessionId, text, crypto.randomUUID());
   } catch (err) {
-    addMessage("note", String(err));
+    addMessage("note", userMessage(err));
     applyState("idle");
   }
 }
@@ -555,7 +556,7 @@ async function send() {
     const { runId } = await api.sendMessage(state.sessionId, text, crypto.randomUUID());
     state.runId = runId;
   } catch (err) {
-    addMessage("note", String(err));
+    addMessage("note", userMessage(err));
     applyState("idle");
   }
 }
@@ -566,7 +567,7 @@ async function stop() {
   try {
     await api.cancel(state.runId);
   } catch (err) {
-    if (!(err instanceof ApiError && err.status === 409)) addMessage("note", String(err));
+    if (!(err instanceof ApiError && err.status === 409)) addMessage("note", userMessage(err));
   }
 }
 
@@ -618,7 +619,7 @@ async function doPublish() {
     }
     celebrate(url);
   } catch (err) {
-    addMessage("note", String(err));
+    addMessage("note", userMessage(err));
   }
 }
 

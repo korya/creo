@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"strconv"
@@ -141,7 +142,7 @@ func SessionStateFor(runStatus string) string {
 func (a *API) loginBegin(w http.ResponseWriter, r *http.Request) {
 	flow, err := a.Identity.BeginLogin(r.Context())
 	if err != nil {
-		httpError(w, http.StatusInternalServerError, err.Error())
+		serverError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, flow)
@@ -156,13 +157,13 @@ func (a *API) loginComplete(w http.ResponseWriter, r *http.Request) {
 	sess, err := a.Identity.CompleteLogin(r.Context(), req)
 	switch {
 	case errors.Is(err, identity.ErrUnknownFlow):
-		httpError(w, http.StatusBadRequest, "that sign-in attempt expired — please pick your account again")
+		httpError(w, http.StatusBadRequest, "That took a while — please pick your name again.")
 		return
 	case errors.Is(err, identity.ErrDisabled), errors.Is(err, identity.ErrUnauthorized):
-		httpError(w, http.StatusUnauthorized, "that account cannot sign in")
+		httpError(w, http.StatusUnauthorized, "That account can't sign in right now.")
 		return
 	case err != nil:
-		httpError(w, http.StatusInternalServerError, err.Error())
+		serverError(w, r, err)
 		return
 	}
 	http.SetCookie(w, &http.Cookie{
@@ -171,7 +172,7 @@ func (a *API) loginComplete(w http.ResponseWriter, r *http.Request) {
 	})
 	p, err := a.Identity.Authenticate(r.Context(), sess.Token)
 	if err != nil {
-		httpError(w, http.StatusInternalServerError, err.Error())
+		serverError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, p)
@@ -240,7 +241,7 @@ func (a *API) resolveVersion(ctx context.Context, projectID, requested string) (
 func (a *API) publishProject(w http.ResponseWriter, r *http.Request) {
 	projectID := r.PathValue("id")
 	if err := a.ownsProject(r.Context(), tenantID(r), projectID); err != nil {
-		httpError(w, http.StatusNotFound, "unknown project")
+		httpError(w, http.StatusNotFound, "That site isn't here anymore.")
 		return
 	}
 	var body struct {
@@ -249,12 +250,12 @@ func (a *API) publishProject(w http.ResponseWriter, r *http.Request) {
 	json.NewDecoder(r.Body).Decode(&body)
 	versionID, err := a.resolveVersion(r.Context(), projectID, body.VersionID)
 	if err != nil || versionID == "" {
-		httpError(w, http.StatusBadRequest, "no version to publish")
+		httpError(w, http.StatusBadRequest, "There's nothing to put online yet — describe your site first.")
 		return
 	}
 	live, err := a.Publish.Publish(r.Context(), projectID, versionID)
 	if err != nil {
-		httpError(w, http.StatusInternalServerError, err.Error())
+		serverError(w, r, err)
 		return
 	}
 	url := a.publicBase(r) + "/sites/" + live.Slug + "/"
@@ -266,15 +267,15 @@ func (a *API) publishProject(w http.ResponseWriter, r *http.Request) {
 func (a *API) rollbackProject(w http.ResponseWriter, r *http.Request) {
 	projectID := r.PathValue("id")
 	if err := a.ownsProject(r.Context(), tenantID(r), projectID); err != nil {
-		httpError(w, http.StatusNotFound, "unknown project")
+		httpError(w, http.StatusNotFound, "That site isn't here anymore.")
 		return
 	}
 	live, err := a.Publish.Rollback(r.Context(), projectID)
 	if errors.Is(err, publish.ErrNoParent) || errors.Is(err, publish.ErrNotPublished) {
-		httpError(w, http.StatusConflict, "nothing to roll back to")
+		httpError(w, http.StatusConflict, "This is the earliest version of your site — there's nothing earlier to go back to.")
 		return
 	} else if err != nil {
-		httpError(w, http.StatusInternalServerError, err.Error())
+		serverError(w, r, err)
 		return
 	}
 	url := a.publicBase(r) + "/sites/" + live.Slug + "/"
@@ -286,17 +287,17 @@ func (a *API) rollbackProject(w http.ResponseWriter, r *http.Request) {
 func (a *API) previewURL(w http.ResponseWriter, r *http.Request) {
 	projectID := r.PathValue("id")
 	if err := a.ownsProject(r.Context(), tenantID(r), projectID); err != nil {
-		httpError(w, http.StatusNotFound, "unknown project")
+		httpError(w, http.StatusNotFound, "That site isn't here anymore.")
 		return
 	}
 	versionID, err := a.resolveVersion(r.Context(), projectID, r.URL.Query().Get("version"))
 	if err != nil || versionID == "" {
-		httpError(w, http.StatusBadRequest, "no version to preview")
+		httpError(w, http.StatusBadRequest, "There's nothing to show yet — describe your site first.")
 		return
 	}
 	secret, err := a.Publish.EnsurePreviewSecret(r.Context(), projectID)
 	if err != nil {
-		httpError(w, http.StatusInternalServerError, err.Error())
+		serverError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{
@@ -308,17 +309,17 @@ func (a *API) previewURL(w http.ResponseWriter, r *http.Request) {
 func (a *API) exportProject(w http.ResponseWriter, r *http.Request) {
 	projectID := r.PathValue("id")
 	if err := a.ownsProject(r.Context(), tenantID(r), projectID); err != nil {
-		httpError(w, http.StatusNotFound, "unknown project")
+		httpError(w, http.StatusNotFound, "That site isn't here anymore.")
 		return
 	}
 	versionID, err := a.resolveVersion(r.Context(), projectID, r.URL.Query().Get("version"))
 	if err != nil || versionID == "" {
-		httpError(w, http.StatusBadRequest, "no version to export")
+		httpError(w, http.StatusBadRequest, "There's nothing to download yet — describe your site first.")
 		return
 	}
 	files, err := a.Projects.VersionFiles(r.Context(), projectID, versionID)
 	if err != nil {
-		httpError(w, http.StatusInternalServerError, err.Error())
+		serverError(w, r, err)
 		return
 	}
 	w.Header().Set("Content-Type", "application/zip")
@@ -359,13 +360,13 @@ func (a *API) auth(next http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p, err := a.resolvePrincipal(r)
 		if errors.Is(err, errNoCredential) {
-			httpError(w, http.StatusUnauthorized, "missing credentials")
+			httpError(w, http.StatusUnauthorized, "Please sign in to continue.")
 			return
 		} else if errors.Is(err, tenant.ErrUnauthorized) || errors.Is(err, identity.ErrUnauthorized) {
-			httpError(w, http.StatusUnauthorized, "invalid or revoked credentials")
+			httpError(w, http.StatusUnauthorized, "Your sign-in has expired. Please sign in again.")
 			return
 		} else if err != nil {
-			httpError(w, http.StatusInternalServerError, err.Error())
+			serverError(w, r, err)
 			return
 		}
 		next(w, r.WithContext(context.WithValue(r.Context(), principalKey, p)))
@@ -440,7 +441,7 @@ func (a *API) createProject(w http.ResponseWriter, r *http.Request) {
 		return err
 	})
 	if err != nil {
-		httpError(w, http.StatusInternalServerError, err.Error())
+		serverError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, p)
@@ -451,7 +452,7 @@ func (a *API) listProjects(w http.ResponseWriter, r *http.Request) {
 		SELECT p.id, p.name, s.id FROM projects p JOIN sessions s ON s.project_id = p.id
 		WHERE p.tenant_id = ? ORDER BY p.created_at`, tenantID(r))
 	if err != nil {
-		httpError(w, http.StatusInternalServerError, err.Error())
+		serverError(w, r, err)
 		return
 	}
 	defer rows.Close()
@@ -459,13 +460,13 @@ func (a *API) listProjects(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var p Project
 		if err := rows.Scan(&p.ID, &p.Name, &p.SessionID); err != nil {
-			httpError(w, http.StatusInternalServerError, err.Error())
+			serverError(w, r, err)
 			return
 		}
 		out = append(out, p)
 	}
 	if err := rows.Err(); err != nil {
-		httpError(w, http.StatusInternalServerError, err.Error())
+		serverError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -474,12 +475,12 @@ func (a *API) listProjects(w http.ResponseWriter, r *http.Request) {
 func (a *API) listVersions(w http.ResponseWriter, r *http.Request) {
 	projectID := r.PathValue("id")
 	if err := a.ownsProject(r.Context(), tenantID(r), projectID); err != nil {
-		httpError(w, http.StatusNotFound, "unknown project")
+		httpError(w, http.StatusNotFound, "That site isn't here anymore.")
 		return
 	}
 	versions, err := a.Projects.ListVersions(r.Context(), projectID)
 	if err != nil {
-		httpError(w, http.StatusInternalServerError, err.Error())
+		serverError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, versions)
@@ -503,10 +504,10 @@ func (a *API) postMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	projectID, err := a.sessionProject(r.Context(), tenantID(r), sessionID)
 	if errors.Is(err, sql.ErrNoRows) {
-		httpError(w, http.StatusNotFound, "unknown session")
+		httpError(w, http.StatusNotFound, "That conversation isn't here anymore.")
 		return
 	} else if err != nil {
-		httpError(w, http.StatusInternalServerError, err.Error())
+		serverError(w, r, err)
 		return
 	}
 	// A message typed while the agent is waiting on a question IS the answer.
@@ -515,7 +516,7 @@ func (a *API) postMessage(w http.ResponseWriter, r *http.Request) {
 	// user would watch their reply vanish.
 	if waitingID, toolID, ok := a.waitingRun(r.Context(), sessionID); ok {
 		if err := a.provideInput(r.Context(), sessionID, waitingID, toolID, body.Text, actor(r)); err != nil {
-			httpError(w, http.StatusInternalServerError, err.Error())
+			serverError(w, r, err)
 			return
 		}
 		writeJSON(w, http.StatusAccepted, map[string]any{
@@ -526,7 +527,7 @@ func (a *API) postMessage(w http.ResponseWriter, r *http.Request) {
 
 	ref, appended, err := a.submit(r.Context(), sessionID, projectID, idemKey, body.Text, actor(r))
 	if err != nil {
-		httpError(w, http.StatusInternalServerError, err.Error())
+		serverError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{
@@ -613,14 +614,14 @@ func (a *API) answerRun(w http.ResponseWriter, r *http.Request) {
 	runID := r.PathValue("id")
 	got, err := a.Coord.Get(r.Context(), runID)
 	if errors.Is(err, run.ErrNotFound) {
-		httpError(w, http.StatusNotFound, "unknown run")
+		httpError(w, http.StatusNotFound, "That change isn't here anymore.")
 		return
 	} else if err != nil {
-		httpError(w, http.StatusInternalServerError, err.Error())
+		serverError(w, r, err)
 		return
 	}
 	if err := a.ownsProject(r.Context(), tenantID(r), got.ProjectID); err != nil {
-		httpError(w, http.StatusNotFound, "unknown run")
+		httpError(w, http.StatusNotFound, "That change isn't here anymore.")
 		return
 	}
 	var body struct {
@@ -638,7 +639,7 @@ func (a *API) answerRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := a.provideInput(r.Context(), got.SessionID, runID, toolID, body.Text, actor(r)); err != nil {
-		httpError(w, http.StatusInternalServerError, err.Error())
+		serverError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]string{"runId": runID})
@@ -650,14 +651,14 @@ func (a *API) cancelRun(w http.ResponseWriter, r *http.Request) {
 	runID := r.PathValue("id")
 	got, err := a.Coord.Get(r.Context(), runID)
 	if errors.Is(err, run.ErrNotFound) {
-		httpError(w, http.StatusNotFound, "unknown run")
+		httpError(w, http.StatusNotFound, "That change isn't here anymore.")
 		return
 	} else if err != nil {
-		httpError(w, http.StatusInternalServerError, err.Error())
+		serverError(w, r, err)
 		return
 	}
 	if err := a.ownsProject(r.Context(), tenantID(r), got.ProjectID); err != nil {
-		httpError(w, http.StatusNotFound, "unknown run")
+		httpError(w, http.StatusNotFound, "That change isn't here anymore.")
 		return
 	}
 	err = a.Coord.Cancel(r.Context(), runID)
@@ -665,7 +666,7 @@ func (a *API) cancelRun(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusConflict, "That was already finished.")
 		return
 	} else if err != nil {
-		httpError(w, http.StatusInternalServerError, err.Error())
+		serverError(w, r, err)
 		return
 	}
 	// One event carries both the stop and the state change the clients render.
@@ -684,7 +685,7 @@ func (a *API) cancelRun(w http.ResponseWriter, r *http.Request) {
 func (a *API) getSession(w http.ResponseWriter, r *http.Request) {
 	sessionID := r.PathValue("id")
 	if _, err := a.sessionProject(r.Context(), tenantID(r), sessionID); err != nil {
-		httpError(w, http.StatusNotFound, "unknown session")
+		httpError(w, http.StatusNotFound, "That conversation isn't here anymore.")
 		return
 	}
 	out := map[string]any{"id": sessionID, "state": StateIdle}
@@ -710,14 +711,14 @@ func (a *API) getSession(w http.ResponseWriter, r *http.Request) {
 func (a *API) getRun(w http.ResponseWriter, r *http.Request) {
 	got, err := a.Coord.Get(r.Context(), r.PathValue("id"))
 	if errors.Is(err, run.ErrNotFound) {
-		httpError(w, http.StatusNotFound, "unknown run")
+		httpError(w, http.StatusNotFound, "That change isn't here anymore.")
 		return
 	} else if err != nil {
-		httpError(w, http.StatusInternalServerError, err.Error())
+		serverError(w, r, err)
 		return
 	}
 	if err := a.ownsProject(r.Context(), tenantID(r), got.ProjectID); err != nil {
-		httpError(w, http.StatusNotFound, "unknown run")
+		httpError(w, http.StatusNotFound, "That change isn't here anymore.")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{
@@ -730,7 +731,7 @@ func (a *API) getRun(w http.ResponseWriter, r *http.Request) {
 func (a *API) streamEvents(w http.ResponseWriter, r *http.Request) {
 	sessionID := r.PathValue("id")
 	if _, err := a.sessionProject(r.Context(), tenantID(r), sessionID); err != nil {
-		httpError(w, http.StatusNotFound, "unknown session")
+		httpError(w, http.StatusNotFound, "That conversation isn't here anymore.")
 		return
 	}
 	after, _ := strconv.ParseInt(r.URL.Query().Get("after"), 10, 64)
@@ -738,7 +739,7 @@ func (a *API) streamEvents(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("stream") == "false" {
 		evs, err := a.Log.Read(r.Context(), sessionID, after, nil)
 		if err != nil {
-			httpError(w, http.StatusInternalServerError, err.Error())
+			serverError(w, r, err)
 			return
 		}
 		if evs == nil {
@@ -788,4 +789,14 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func httpError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
+}
+
+// serverError handles the unexpected. The cause goes to the operator's log
+// with the route that produced it; the caller gets a sentence. Returning
+// err.Error() would put Go error strings — file paths, SQL, driver noise — on
+// a non-coder's screen, which R-AGT-2 exists to prevent.
+func serverError(w http.ResponseWriter, r *http.Request, err error) {
+	slog.Error("request failed", "method", r.Method, "path", r.URL.Path, "err", err)
+	httpError(w, http.StatusInternalServerError,
+		"Something went wrong on our side. Your site is safe — please try again.")
 }
