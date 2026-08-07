@@ -257,6 +257,8 @@ func TestKillDashNineAndResume(t *testing.T) {
 	if len(versions) != 1 {
 		t.Fatalf("want 1 committed version, got %d", len(versions))
 	}
+	// The version a resumed run produced must still be one a visitor can open.
+	assertServable(t, e, "", projectID)
 	// All eight pages of the script exist: the resumed run continued, not restarted.
 	for i := 1; i <= 8; i++ {
 		p := filepath.Join(e.dataDir, "workspaces", projectID, slowSitePage(i))
@@ -308,6 +310,7 @@ func TestSigtermMidRunResumes(t *testing.T) {
 			t.Fatalf("missing %s after resume: %v", p, err)
 		}
 	}
+	assertServable(t, e, "", projectID)
 }
 
 // slowSitePage mirrors the filenames fake:slow-site writes. Its first page is

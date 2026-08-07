@@ -91,9 +91,36 @@ func waitForAuthed(t *testing.T, e *env, token, sessionID string, timeout time.D
 }
 
 func waitCompletedAuthed(t *testing.T, e *env, token, sessionID string, n int) []event {
-	return waitForAuthed(t, e, token, sessionID, 30*time.Second, func(evs []event) bool {
+	evs := waitForAuthed(t, e, token, sessionID, 30*time.Second, func(evs []event) bool {
 		return count(evs, "run.completed") >= n
 	})
+	// Every completed run leaves a servable site — that is the invariant issue
+	// #4 established. Asserting it here rather than at each call site is what
+	// stops the coverage drifting: a scenario cannot opt out by forgetting.
+	assertServable(t, e, token, projectOf(t, e, token, sessionID))
+	return evs
+}
+
+// projectOf maps a session back to its project using only the public API,
+// so the guardrail needs no extra plumbing at the call sites.
+func projectOf(t *testing.T, e *env, token, sessionID string) string {
+	t.Helper()
+	resp := doAuthed(t, e, token, "GET", "/v1/projects", nil, nil)
+	defer resp.Body.Close()
+	var projects []struct {
+		ID        string `json:"id"`
+		SessionID string `json:"sessionId"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&projects); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range projects {
+		if p.SessionID == sessionID {
+			return p.ID
+		}
+	}
+	t.Fatalf("no project for session %s", sessionID)
+	return ""
 }
 
 func waitCompleted(t *testing.T, e *env, token, sessionID string, n int) []event {
