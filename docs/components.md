@@ -224,12 +224,14 @@ interface ProductProfile {
   executionLevel: "L0" | "L1" | "L2"
   artifactPolicy: {staticOnly: bool, cspTemplate, maxSizeBytes}
   siteLanguage: "explicit-setting"          // never inferred (spike-01 finding)
-  validators: ValidatorRef[]                // L1 trusted tooling
+  requiredFiles: Path[]                     // minimal validators, implemented M4
   vocabulary: {...}                         // user-facing language of the product
 }
 ```
 
-**Contracts:** the platform refuses to start a run whose palette exceeds the profile's execution level or the bound provider's capabilities; profile versions are recorded on every run (reproducibility); a profile cannot grant what the platform layer forbids.
+**Contracts:** the platform refuses to start a run whose palette exceeds the profile's execution level or the bound provider's capabilities; **and refuses to finish one whose artifact the profile cannot serve** — `ValidateArtifact` is the floor to `ValidatePalette`'s ceiling. Profile versions are recorded on every run (reproducibility); a profile cannot grant what the platform layer forbids.
+
+**Artifact validity (implemented M4, issue #4).** `RequiredFiles` is the minimal first form of the declared validators: the websites vertical requires `index.html`, present and non-empty, at the site root — not a convention but a consequence of the PreviewGateway resolving every directory root to that path. The check is injected into `ProjectStore.Commit` and `PreviewGateway.Publish`/`Rollback` as closures, so those components enforce a policy they do not author and import no policy package. The result is one invariant worth stating plainly: **a version exists only if the vertical can serve it, and the live pointer only ever targets one that exists.** When the agent declares itself finished over an unservable artifact, the harness spends up to two logged repair turns before failing honestly; nothing is minted in the meantime.
 
 **Backing:** embedded config in v-min (the websites profile ships in the binary); a registry when third-party verticals exist.
 

@@ -77,7 +77,8 @@ publish.requested | publish.completed | publish.rolled_back
 approval.requested | approval.responded
 input.requested | input.provided
 sandbox.created | sandbox.lost | sandbox.restored
-repair.started | repair.completed   // auto-repair, surfaced per the R-AGT-3 escalation ladder
+repair.started | repair.completed   // auto-repair (emitted since M4): started renders nothing,
+                                    // completed carries one line per the R-AGT-3 ladder
 error.translated                    // plain-language failure event
 ```
 
