@@ -1,7 +1,9 @@
 # Blueprint — servable versions, derived from scratch (issue #4)
 
-**Status:** validated plan, awaiting approval · 2026-08-07
-**Provenance:** independent derivation per instruction; `docs/plans/fix-05-unservable-artifact.md` was neither used as input nor cited as evidence. Every claim below carries its own HEAD citation. Root-cause analysis: the issue-#4 RCA in this session (5-whys chain verified in code).
+**Status:** **implemented 2026-08-07** — shipped in six commits (`profile:` → `project:` → `harness:` → `publish:`/`api:` → `model:`/`e2e:` → `docs:`). One premise was wrong and is corrected in step 7; one fixture had to change and was signed off.
+**Provenance:** independent derivation per instruction; a superseded draft of the same fix existed at the time and was neither used as input nor cited as evidence (it has since been deleted, so nobody implements the wrong one). Every claim below carries its own HEAD citation. Root-cause analysis: the issue-#4 RCA in this session (5-whys chain verified in code).
+
+**Accepted coverage limits (recorded at implementation).** The repair *mechanics* are owned by deterministic fixtures — `repairs-site` for the happy path, `no-page` for exhaustion, plus a kill-and-resume case proving the budget survives takeover. A real model's early stop could not be forced on demand, so the live qwen3.6 run proves only the absence of false positives on healthy output, not the presence of a real-world repair. Issue #4 records how it manifested in the wild.
 
 ## Headline
 
