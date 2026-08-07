@@ -288,7 +288,10 @@ func (h *Harness) Execute(ctx context.Context, r *run.Run) (string, error) {
 	}
 
 	var closing []eventlog.NewEvent
-	if repairs > priorRepairs {
+	// Any repair spent on this run, by this worker or one that crashed before
+	// finishing, means the acknowledgment is owed. "Did I repair?" would lose
+	// it across a takeover; "was this run repaired?" is what the log answers.
+	if repairs > 0 {
 		closing = append(closing, eventlog.NewEvent{
 			Type: EvRepairCompleted, RunID: r.ID, UserText: repairAcknowledgment,
 		})

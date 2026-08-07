@@ -486,3 +486,50 @@ func TestReconstructReplaysRepairInstruction(t *testing.T) {
 		t.Fatalf("repair instruction not replayed as a user turn: %+v", last)
 	}
 }
+
+// A repair that spans a crash still happened. The worker that finishes it did
+// not start it, so "did I repair?" is the wrong question — "was this run
+// repaired?" is the right one, and the log is what knows.
+func TestRepairAcknowledgedAfterTakeover(t *testing.T) {
+	gw := &model.Fake{ScriptName: "repairs", Steps: []model.FakeStep{
+		{Text: "Styling first.", Tools: []model.FakeToolCall{page("style.css", "body{}")}},
+		{Text: "All set."},
+		{Text: "Adding the home page.", Tools: []model.FakeToolCall{page("index.html", "<h1>Hi</h1>")}},
+		{Text: "Your site is ready."},
+	}}
+	f := setup(t, gw)
+	f.gateArtifacts()
+	r := f.claimRun(t, "w1")
+	ctx := context.Background()
+
+	// The state a crashed worker leaves behind: it declared done, the gate
+	// refused, it logged the instruction — and then died.
+	assistant := func(text string) eventlog.NewEvent {
+		return eventlog.NewEvent{Type: EvAssistant, RunID: r.ID,
+			Detail: assistantDetail{Blocks: []model.Block{{Type: model.BlockText, Text: text}}}}
+	}
+	if _, err := f.log.Append(ctx, "s1", []eventlog.NewEvent{
+		{Type: EvRunStarted, RunID: r.ID},
+		assistant("Styling first."),
+		assistant("All set."),
+		{Type: EvRepairStarted, RunID: r.ID, Detail: RepairDetail{
+			Reason: "no index.html", Instruction: "The site has no index.html home page. Create it now."}},
+	}, &r.Lease); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := f.h.Execute(ctx, r); err != nil {
+		t.Fatalf("the resumed worker should have finished the repair: %v", err)
+	}
+	evs := f.events(t)
+	if n := countType(evs, EvVersionCreated); n != 1 {
+		t.Fatalf("want 1 version after the resumed repair, got %d", n)
+	}
+	if n := countType(evs, EvRepairCompleted); n != 1 {
+		t.Fatalf("want 1 repair.completed after a repair that spanned a crash, got %d", n)
+	}
+	// And the budget is not re-spent: the instruction was already in the log.
+	if n := countType(evs, EvRepairStarted); n != 1 {
+		t.Fatalf("resumed worker spent extra budget: %d repair.started", n)
+	}
+}
