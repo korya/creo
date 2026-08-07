@@ -115,3 +115,31 @@ func listProjects(t *testing.T, e *env, token string) []string {
 	}
 	return out
 }
+
+// assertServable is the standing guardrail for issue #4: whatever a run
+// produced, a visitor must be able to open it. Called after run-completion
+// waits so that any future path minting a version nobody can view fails here
+// loudly, instead of being discovered by a user whose site 404s.
+func assertServable(t *testing.T, e *env, token, projectID string) {
+	t.Helper()
+	resp := doAuthed(t, e, token, "GET", "/v1/projects/"+projectID+"/preview", nil, nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("no previewable version after a completed run: HTTP %d", resp.StatusCode)
+	}
+	var out struct {
+		URL string `json:"url"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	site, err := httpGet(out.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer site.Body.Close()
+	if site.StatusCode != 200 {
+		t.Fatalf("the run completed but the site root serves HTTP %d — a visitor would see an error page",
+			site.StatusCode)
+	}
+}

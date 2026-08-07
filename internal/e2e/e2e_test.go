@@ -259,7 +259,7 @@ func TestKillDashNineAndResume(t *testing.T) {
 	}
 	// All eight pages of the script exist: the resumed run continued, not restarted.
 	for i := 1; i <= 8; i++ {
-		p := filepath.Join(e.dataDir, "workspaces", projectID, fmt.Sprintf("page%d.html", i))
+		p := filepath.Join(e.dataDir, "workspaces", projectID, slowSitePage(i))
 		if _, err := os.Stat(p); err != nil {
 			t.Fatalf("missing %s after resume: %v", p, err)
 		}
@@ -303,11 +303,21 @@ func TestSigtermMidRunResumes(t *testing.T) {
 		t.Fatalf("run status after graceful-restart resume: %s", r.Status)
 	}
 	for i := 1; i <= 8; i++ {
-		p := filepath.Join(e.dataDir, "workspaces", projectID, fmt.Sprintf("page%d.html", i))
+		p := filepath.Join(e.dataDir, "workspaces", projectID, slowSitePage(i))
 		if _, err := os.Stat(p); err != nil {
 			t.Fatalf("missing %s after resume: %v", p, err)
 		}
 	}
+}
+
+// slowSitePage mirrors the filenames fake:slow-site writes. Its first page is
+// the home page, so the eight-page build is a site a visitor can actually
+// open — see the fixture for why that stopped being optional.
+func slowSitePage(i int) string {
+	if i == 1 {
+		return "index.html"
+	}
+	return fmt.Sprintf("page%d.html", i)
 }
 
 // AC-3: submitting the same message twice creates exactly one run.

@@ -62,6 +62,7 @@ func TestPublishRollbackExportPreview(t *testing.T) {
 	// Build v1.
 	sayAuthed(t, e.env, token, sessionID, "build me a site", "k1")
 	waitCompletedAuthed(t, e.env, token, sessionID, 1)
+	assertServable(t, e.env, token, projectID)
 
 	// Publish -> live URL serves the built HTML with a strict CSP (S2, S4).
 	pub := postJSON(t, e.env, token, "/v1/projects/"+projectID+"/publish", nil)

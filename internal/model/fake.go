@@ -97,9 +97,16 @@ func FakeScript(name string) (*Fake, error) {
 	case "slow-site":
 		steps := make([]FakeStep, 0, 9)
 		for i := 0; i < 8; i++ {
+			// The first page is the home page. Before the artifact gate this
+			// script wrote page1..page8 and no index.html — an eight-page site
+			// a visitor could not open, which nothing in the suite noticed.
+			path := fmt.Sprintf("page%d.html", i+1)
+			if i == 0 {
+				path = "index.html"
+			}
 			steps = append(steps, FakeStep{
 				Text:  fmt.Sprintf("Working on part %d of your site.", i+1),
-				Tools: []FakeToolCall{page(fmt.Sprintf("page%d.html", i+1), fmt.Sprintf("<h1>Page %d</h1>", i+1))},
+				Tools: []FakeToolCall{page(path, fmt.Sprintf("<h1>Page %d</h1>", i+1))},
 			})
 		}
 		steps = append(steps, FakeStep{Text: "Your site is ready with all eight pages."})
@@ -134,6 +141,34 @@ func FakeScript(name string) (*Fake, error) {
 				"question": "What are your opening hours?",
 			}}}},
 			{Text: "Adding your hours.", Tools: []FakeToolCall{page("hours.html", "<h1>Hours</h1>")}},
+			{Text: "Your site is ready."},
+		}}, nil
+	case "no-page":
+		// Styling but never a page. Every repair turn re-answers "All done."
+		// with no writes, so the exhaustion path is deterministic.
+		return &Fake{ScriptName: name, Steps: []FakeStep{
+			{Text: "Setting up the styling.", Tools: []FakeToolCall{page("css/style.css", "body{font-family:serif}")}},
+			{Text: "All done."},
+		}}, nil
+	case "repairs-site":
+		// Declares victory over a styling-only site, then produces the page
+		// once told. Steps 2-3 are reachable only via a repair turn, so this
+		// script exercises the repair path and nothing else does.
+		return &Fake{ScriptName: name, Steps: []FakeStep{
+			{Text: "Setting up the styling.", Tools: []FakeToolCall{page("css/style.css", "body{font-family:serif}")}},
+			{Text: "All done."},
+			{Text: "Adding the home page.", Tools: []FakeToolCall{page("index.html", "<h1>Kastanja</h1>")}},
+			{Text: "Your site is ready."},
+		}}, nil
+	case "asks-before-page":
+		// Parks on a question while the site is still unservable, which is the
+		// case that exercises the mid-run commit skipping rather than failing.
+		return &Fake{ScriptName: name, Steps: []FakeStep{
+			{Text: "Setting up the styling.", Tools: []FakeToolCall{page("css/style.css", "body{font-family:serif}")}},
+			{Text: "", Tools: []FakeToolCall{{Name: "ask_user", Input: map[string]any{
+				"question": "What should the headline say?",
+			}}}},
+			{Text: "Adding your home page.", Tools: []FakeToolCall{page("index.html", "<h1>Kastanja</h1>")}},
 			{Text: "Your site is ready."},
 		}}, nil
 	case "hostile":
