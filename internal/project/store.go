@@ -43,6 +43,16 @@ type Store struct {
 	db     *store.DB
 	casDir string
 
+	// Validate, when set, decides whether the artifact is worth minting a
+	// version for at all. It runs before Quota: servability is a property of
+	// the content, capacity is a property of the account, and a tenant near
+	// their storage limit mid-repair should hear "there is no home page yet"
+	// (repairable) rather than "you are out of space" (terminal).
+	//
+	// Like Quota it is injected, so the store executes policy it does not
+	// author and imports no policy package (one authority per component).
+	Validate func(files []File) error
+
 	// Quota, when set, vets a commit before any bytes are written. It receives
 	// the content-addressed manifest so the tenant layer can price the commit
 	// with dedup in mind; ProjectStore stays ignorant of tenants entirely
@@ -85,6 +95,17 @@ func (s *Store) Commit(ctx context.Context, projectID string, ws *workspace.Work
 
 	// Vet before writing: a refused commit must leave nothing behind, or a
 	// tenant at their limit would keep growing the store on every attempt.
+	// Servability first — see the Validate field comment for why the order
+	// is load-bearing rather than incidental.
+	if s.Validate != nil {
+		files := make([]File, 0, len(manifest))
+		for _, e := range manifest {
+			files = append(files, File{Path: e.path, BlobSHA: e.sha, Size: int64(e.size)})
+		}
+		if err := s.Validate(files); err != nil {
+			return "", fmt.Errorf("commit %s: %w", projectID, err)
+		}
+	}
 	if s.Quota != nil {
 		blobs := make([]Blob, 0, len(manifest))
 		for _, e := range manifest {

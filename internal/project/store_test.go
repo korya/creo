@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -153,5 +154,98 @@ func TestMaterializeUnknownVersion(t *testing.T) {
 	err := ps.Materialize(context.Background(), "p1", "v_nope", ws)
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("want ErrNotFound, got %v", err)
+	}
+}
+
+// The mint gate: a refused artifact must leave the store exactly as it was —
+// no blobs on disk, no rows — or a project stuck in a bad state would grow the
+// store on every retry, and retrying is what people do.
+func TestCommitRefusedByValidateWritesNothing(t *testing.T) {
+	s, wp := setup(t)
+	ctx := context.Background()
+	ws, err := wp.Open("p1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ws.WriteFile("style.css", []byte("body{}")); err != nil {
+		t.Fatal(err)
+	}
+
+	sentinel := errors.New("not servable")
+	var got []File
+	s.Validate = func(files []File) error {
+		got = files
+		return sentinel
+	}
+
+	if _, err := s.Commit(ctx, "p1", ws, "e1"); !errors.Is(err, sentinel) {
+		t.Fatalf("commit err = %v, want the injected policy error to propagate", err)
+	}
+	// The hook sees the manifest it needs to judge servability.
+	if len(got) != 1 || got[0].Path != "style.css" || got[0].Size != 6 {
+		t.Fatalf("hook received %+v, want one sized manifest entry", got)
+	}
+
+	var versions, files int
+	if err := s.db.R.QueryRow(`SELECT COUNT(*) FROM versions`).Scan(&versions); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.db.R.QueryRow(`SELECT COUNT(*) FROM version_files`).Scan(&files); err != nil {
+		t.Fatal(err)
+	}
+	if versions != 0 || files != 0 {
+		t.Fatalf("refused commit left %d versions / %d file rows", versions, files)
+	}
+	entries, err := os.ReadDir(s.casDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("refused commit wrote %d blob(s) to the content store", len(entries))
+	}
+}
+
+// Servability is decided before capacity. A tenant near their storage limit
+// mid-repair must hear "there is no home page yet" — which another turn can
+// fix — rather than "you are out of space", which it cannot.
+func TestValidateRunsBeforeQuota(t *testing.T) {
+	s, wp := setup(t)
+	ctx := context.Background()
+	ws, _ := wp.Open("p1")
+	if err := ws.WriteFile("style.css", []byte("body{}")); err != nil {
+		t.Fatal(err)
+	}
+
+	invalid := errors.New("not servable")
+	overQuota := errors.New("out of space")
+	quotaCalled := false
+	s.Validate = func([]File) error { return invalid }
+	s.Quota = func(context.Context, string, []Blob) error {
+		quotaCalled = true
+		return overQuota
+	}
+
+	_, err := s.Commit(ctx, "p1", ws, "e1")
+	if !errors.Is(err, invalid) {
+		t.Fatalf("commit err = %v, want the servability refusal", err)
+	}
+	if errors.Is(err, overQuota) {
+		t.Fatal("quota refusal masked the servability refusal")
+	}
+	if quotaCalled {
+		t.Fatal("quota was consulted for an artifact that is not a site")
+	}
+}
+
+// A nil hook is the pre-existing behaviour, so every other caller and test is
+// unaffected by the gate's existence.
+func TestCommitWithoutValidateHook(t *testing.T) {
+	s, wp := setup(t)
+	ws, _ := wp.Open("p1")
+	if err := ws.WriteFile("style.css", []byte("body{}")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Commit(context.Background(), "p1", ws, "e1"); err != nil {
+		t.Fatalf("nil Validate must not gate: %v", err)
 	}
 }
