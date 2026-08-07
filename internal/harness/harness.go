@@ -38,6 +38,8 @@ const (
 	EvInputRequested  = "input.requested"
 	EvInputProvided   = "input.provided"
 	EvStateChanged    = "session.state.changed"
+	EvRepairStarted   = "repair.started"
+	EvRepairCompleted = "repair.completed"
 	ToolAskUser       = "ask_user"
 	askOneAtATimeNote = "Only one question at a time — ask this again after the current one is answered."
 )
@@ -53,6 +55,25 @@ type InputRequestDetail struct {
 	ToolID   string   `json:"toolId"`
 	Question string   `json:"question"`
 	Choices  []string `json:"choices,omitempty"`
+}
+
+// maxRepairs bounds the silent self-repair loop. Two is enough for "you forgot
+// the home page" and cheap enough on a slow local model, where a turn can cost
+// minutes (decided 2026-08-07).
+const maxRepairs = 2
+
+// repairAcknowledgment is the single line a user sees when a repair happened.
+// It acknowledges the time, not the artifact: naming the home page would invite
+// worry about a problem they never saw (R-AGT-3's ladder, decided 2026-08-07).
+const repairAcknowledgment = "That one took a little longer than usual."
+
+// RepairDetail records why a repair turn was taken and what the agent was told.
+// The instruction lives here rather than only in memory because reconstruct()
+// rebuilds the conversation from the log alone — an unlogged instruction would
+// vanish on takeover and the model would simply re-declare itself finished.
+type RepairDetail struct {
+	Reason      string `json:"reason"`
+	Instruction string `json:"instruction"`
 }
 
 // InputProvidedDetail ties an answer back to the question's tool call, so a
@@ -132,7 +153,17 @@ func (h *Harness) Execute(ctx context.Context, r *run.Run) (string, error) {
 		return "", fmt.Errorf("run %s: no user message in session %s", r.ID, sessionID)
 	}
 
-	var finalText string
+	// Repair budget is counted from the log, not from a local variable, so a
+	// takeover mid-repair cannot hand the model a fresh set of attempts.
+	priorRepairs := 0
+	for _, e := range prior {
+		if e.RunID == r.ID && e.Type == EvRepairStarted {
+			priorRepairs++
+		}
+	}
+	repairs := priorRepairs
+
+	var finalText, versionID string
 	for it := 0; it < h.Profile.MaxIterations; it++ {
 		if pending := pendingTools(msgs); len(pending) > 0 {
 			var resultEvents []eventlog.NewEvent
@@ -219,27 +250,94 @@ func (h *Harness) Execute(ctx context.Context, r *run.Run) (string, error) {
 			return "", err
 		}
 		msgs = append(msgs, model.Message{Role: model.RoleAssistant, Blocks: comp.Blocks})
-		if final {
-			finalText = uiText
-			break
+		if !final {
+			continue
 		}
+
+		// The model says it is finished; the store decides whether that is
+		// true. Commit is the validator — asking it, rather than checking
+		// separately, means the gate and the check cannot disagree.
+		vid, err := h.Projects.Commit(ctx, r.ProjectID, ws, r.TriggerEventID)
+		if errors.Is(err, profile.ErrArtifactInvalid) && repairs < maxRepairs {
+			repairs++
+			if err := h.emitRepair(ctx, r, lease, err); err != nil {
+				return "", err
+			}
+			msgs = append(msgs, repairMessage(err))
+			continue
+		}
+		if err != nil {
+			// Includes an exhausted repair budget: nothing is committed, and
+			// the caller turns this into one plain-language failure.
+			return "", fmt.Errorf("version commit: %w", err)
+		}
+		versionID, finalText = vid, uiText
+		break
 	}
-	if finalText == "" {
+
+	if versionID == "" {
+		// The step limit ran out before the model declared itself done. The
+		// work so far may still be a site — but if it is not, saying "the work
+		// so far is saved" would be exactly the lie this gate exists to stop.
+		vid, err := h.Projects.Commit(ctx, r.ProjectID, ws, r.TriggerEventID)
+		if err != nil {
+			return "", fmt.Errorf("version commit: %w", err)
+		}
+		versionID = vid
 		finalText = "I stopped after reaching the step limit for one request. The work so far is saved."
 	}
 
-	versionID, err := h.Projects.Commit(ctx, r.ProjectID, ws, r.TriggerEventID)
-	if err != nil {
-		return "", fmt.Errorf("version commit: %w", err)
+	var closing []eventlog.NewEvent
+	if repairs > priorRepairs {
+		closing = append(closing, eventlog.NewEvent{
+			Type: EvRepairCompleted, RunID: r.ID, UserText: repairAcknowledgment,
+		})
 	}
-	closing := []eventlog.NewEvent{
-		{Type: EvVersionCreated, RunID: r.ID, Detail: map[string]string{"versionId": versionID}},
-		{Type: EvRunCompleted, RunID: r.ID, UserText: finalText},
-	}
+	closing = append(closing,
+		eventlog.NewEvent{Type: EvVersionCreated, RunID: r.ID, Detail: map[string]string{"versionId": versionID}},
+		eventlog.NewEvent{Type: EvRunCompleted, RunID: r.ID, UserText: finalText},
+	)
 	if _, err := h.Log.Append(ctx, sessionID, closing, lease); err != nil {
 		return "", err
 	}
 	return finalText, nil
+}
+
+// repairReason extracts the part of an ErrArtifactInvalid message that names
+// what is wrong ("no index.html"), discarding the wrapping context the model
+// has no use for. Falls back to the sentinel's own wording.
+func repairReason(err error) string {
+	msg := err.Error()
+	marker := profile.ErrArtifactInvalid.Error() + ": "
+	if i := strings.Index(msg, marker); i >= 0 {
+		return msg[i+len(marker):]
+	}
+	return profile.ErrArtifactInvalid.Error()
+}
+
+// repairInstruction is what the agent is told. Terse and imperative, because a
+// chatty model will echo a conversational one back into the transcript.
+func repairInstruction(err error) string {
+	return "The site is not finished yet: " + repairReason(err) +
+		". A visitor would get an error page. Create the missing page now, reusing the work already in the workspace."
+}
+
+func repairMessage(err error) model.Message {
+	return model.Message{
+		Role:   model.RoleUser,
+		Blocks: []model.Block{{Type: model.BlockText, Text: repairInstruction(err)}},
+	}
+}
+
+// emitRepair logs the repair turn. userText is empty: the user asked for a
+// website and is getting one, and a stumble they never saw is not news. The
+// acknowledgment comes later, once, if the repair works.
+func (h *Harness) emitRepair(ctx context.Context, r *run.Run, lease *eventlog.Lease, cause error) error {
+	_, err := h.Log.Append(ctx, r.SessionID, []eventlog.NewEvent{{
+		Type: EvRepairStarted, RunID: r.ID,
+		Detail: RepairDetail{Reason: repairReason(cause), Instruction: repairInstruction(cause)},
+	}}, lease)
+	return err
 }
 
 // emitQuestion records the agent's question. userText is the question itself,
@@ -269,6 +367,12 @@ func (h *Harness) emitQuestion(ctx context.Context, r *run.Run, lease *eventlog.
 // workspace is unchanged — Commit is content-addressed.
 func (h *Harness) commitProgress(ctx context.Context, r *run.Run, ws *workspace.Workspace) error {
 	versionID, err := h.Projects.Commit(ctx, r.ProjectID, ws, r.TriggerEventID)
+	if errors.Is(err, profile.ErrArtifactInvalid) {
+		// Nothing servable to snapshot yet. Parking mid-build before a page
+		// exists is legitimate; minting a broken version is not, and the
+		// workspace keeps the partial work either way.
+		return nil
+	}
 	if err != nil {
 		return fmt.Errorf("version commit: %w", err)
 	}
@@ -286,6 +390,8 @@ func (h *Harness) EmitFailure(ctx context.Context, r *run.Run, cause error) {
 	switch {
 	case errors.Is(cause, tenant.ErrBudgetExceeded):
 		text = "The AI budget for this account is used up for today. Your project is safe — try again tomorrow, or ask whoever runs this server to raise the limit."
+	case errors.Is(cause, profile.ErrArtifactInvalid):
+		text = "I couldn't finish your site this time — it doesn't have a home page yet. Nothing went online, and everything built so far is kept. Try asking once more."
 	case errors.Is(cause, tenant.ErrStorageExceeded):
 		text = "There's no room left to save more changes. Your site is safe as it is — ask whoever runs this server for more space, or remove a few images to free some up."
 	}
@@ -375,6 +481,18 @@ func reconstruct(events []eventlog.Event) []model.Message {
 			if err := json.Unmarshal(e.Detail, &d); err == nil {
 				pendingResults = append(pendingResults, model.Block{
 					Type: model.BlockToolResult, ToolID: d.ToolID, ToolName: d.ToolName, Content: d.Content, IsError: d.IsError,
+				})
+			}
+		case EvRepairStarted:
+			// A repair instruction is part of the conversation the model saw,
+			// so a resumed run must see it too — otherwise it would simply
+			// re-declare itself finished and burn the budget again.
+			var d RepairDetail
+			if err := json.Unmarshal(e.Detail, &d); err == nil && d.Instruction != "" {
+				flush()
+				msgs = append(msgs, model.Message{
+					Role:   model.RoleUser,
+					Blocks: []model.Block{{Type: model.BlockText, Text: d.Instruction}},
 				})
 			}
 		case EvInputProvided:
