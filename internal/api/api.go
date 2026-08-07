@@ -24,6 +24,7 @@ import (
 	"github.com/korya/creo/internal/eventlog"
 	"github.com/korya/creo/internal/harness"
 	"github.com/korya/creo/internal/identity"
+	"github.com/korya/creo/internal/profile"
 	"github.com/korya/creo/internal/project"
 	"github.com/korya/creo/internal/publish"
 	"github.com/korya/creo/internal/run"
@@ -260,7 +261,11 @@ func (a *API) publishProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	live, err := a.Publish.Publish(r.Context(), projectID, versionID)
-	if err != nil {
+	if errors.Is(err, profile.ErrArtifactInvalid) {
+		httpError(w, http.StatusConflict,
+			"That version of your site doesn't have a home page, so it can't go online. Ask for the page you want, then publish again.")
+		return
+	} else if err != nil {
 		serverError(w, r, err)
 		return
 	}
@@ -277,6 +282,11 @@ func (a *API) rollbackProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	live, err := a.Publish.Rollback(r.Context(), projectID)
+	if errors.Is(err, profile.ErrArtifactInvalid) {
+		httpError(w, http.StatusConflict,
+			"The earlier version doesn't have a home page, so it can't go back online. Ask for the page you want, then publish again.")
+		return
+	}
 	if errors.Is(err, publish.ErrNoParent) || errors.Is(err, publish.ErrNotPublished) {
 		httpError(w, http.StatusConflict, "This is the earliest version of your site — there's nothing earlier to go back to.")
 		return

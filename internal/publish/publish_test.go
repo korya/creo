@@ -104,3 +104,59 @@ func TestPreviewSecret(t *testing.T) {
 		t.Fatal("empty secret accepted")
 	}
 }
+
+// The legacy backstop. Versions minted before the artifact gate existed can be
+// unservable, and one such version exists in real data. This cannot be an e2e
+// scenario — post-fix the product can no longer create the state — so the
+// guarantee is pinned here instead.
+func TestLivePointerRefusesAnUnservableVersion(t *testing.T) {
+	unservable := errors.New("no index.html")
+	ctx := context.Background()
+
+	t.Run("publish", func(t *testing.T) {
+		s, _ := setup(t)
+		s.Validate = func(_ context.Context, _, versionID string) error {
+			if versionID == "v2" {
+				return unservable
+			}
+			return nil
+		}
+		if _, err := s.Publish(ctx, "p1", "v2"); !errors.Is(err, unservable) {
+			t.Fatalf("publish err = %v, want the refusal", err)
+		}
+		// Refused before the pointer moved — nothing is live.
+		if _, err := s.Current(ctx, "p1"); !errors.Is(err, ErrNotPublished) {
+			t.Fatalf("a refused publish still moved the live pointer: %v", err)
+		}
+		// A servable sibling still publishes, so the gate is not a blanket veto.
+		if _, err := s.Publish(ctx, "p1", "v1"); err != nil {
+			t.Fatalf("servable version refused: %v", err)
+		}
+	})
+
+	t.Run("rollback", func(t *testing.T) {
+		s, _ := setup(t)
+		if _, err := s.Publish(ctx, "p1", "v2"); err != nil {
+			t.Fatal(err)
+		}
+		// Only now does the parent become unservable in the gate's eyes — the
+		// check has to happen after the parent is resolved inside the
+		// transaction, which is why a handler-side pre-check would be wrong.
+		s.Validate = func(_ context.Context, _, versionID string) error {
+			if versionID == "v1" {
+				return unservable
+			}
+			return nil
+		}
+		if _, err := s.Rollback(ctx, "p1"); !errors.Is(err, unservable) {
+			t.Fatalf("rollback err = %v, want the refusal", err)
+		}
+		live, err := s.Current(ctx, "p1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if live.VersionID != "v2" {
+			t.Fatalf("a refused rollback still moved live to %s", live.VersionID)
+		}
+	})
+}

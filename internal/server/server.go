@@ -109,6 +109,17 @@ func New(cfg Config) (*Server, error) {
 		return nil, err
 	}
 	tenants := tenant.New(db)
+	prof := harness.DefaultProfile()
+	// Issue #4: the mint gate. A version only exists if the vertical can serve
+	// it, so "a version exists" and "the site works" stop being different
+	// things. Runs before the quota hook — see project.Store.Validate.
+	ps.Validate = func(files []project.File) error {
+		sizes := make(map[string]int64, len(files))
+		for _, f := range files {
+			sizes[f.Path] = f.Size
+		}
+		return prof.ValidateArtifact(sizes)
+	}
 	// D2 / R-TEN-3: the storage cap, enforced where the store actually grows.
 	ps.Quota = func(ctx context.Context, projectID string, blobs []project.Blob) error {
 		tid, err := tenants.TenantOfProject(ctx, projectID)
@@ -163,10 +174,23 @@ func New(cfg Config) (*Server, error) {
 			Projects:   ps,
 			Workspaces: wp,
 			Gateway:    &model.Metered{Inner: gw, DB: db, Budget: budget},
-			Profile:    harness.DefaultProfile(),
+			Profile:    prof,
 		},
 	}
 	pub := publish.New(db)
+	// The live-pointer gate: versions minted before the mint gate existed can
+	// still be unservable, and nothing should be able to point a visitor at one.
+	pub.Validate = func(ctx context.Context, projectID, versionID string) error {
+		files, err := ps.VersionFiles(ctx, projectID, versionID)
+		if err != nil {
+			return err
+		}
+		sizes := make(map[string]int64, len(files))
+		for _, f := range files {
+			sizes[f.Path] = f.Size
+		}
+		return prof.ValidateArtifact(sizes)
+	}
 	web, err := webui.Handler(cfg.WebDir)
 	if err != nil {
 		_ = db.Close() // constructor is already failing; this is cleanup
@@ -182,7 +206,7 @@ func New(cfg Config) (*Server, error) {
 	}
 	s.serving = &http.Server{
 		Addr:    cfg.ServeAddr,
-		Handler: serving.New(ps, pub, harness.DefaultProfile().CSP).Routes(),
+		Handler: serving.New(ps, pub, prof.CSP).Routes(),
 	}
 	return s, nil
 }
