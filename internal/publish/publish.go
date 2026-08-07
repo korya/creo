@@ -28,6 +28,12 @@ type Live struct {
 
 type Store struct {
 	db *store.DB
+
+	// Validate, when set, vets a version before the live pointer moves to it.
+	// The mint gate stops new unservable versions being created; this stops
+	// the ones that already exist from ever going live. Injected, so the
+	// publish store executes policy it does not author.
+	Validate func(ctx context.Context, projectID, versionID string) error
 }
 
 func New(db *store.DB) *Store { return &Store{db: db} }
@@ -76,6 +82,11 @@ func (s *Store) CheckPreviewSecret(ctx context.Context, projectID, supplied stri
 func (s *Store) Publish(ctx context.Context, projectID, versionID string) (Live, error) {
 	live := Live{ProjectID: projectID, VersionID: versionID}
 	err := s.db.Write(ctx, func(tx *sql.Tx) error {
+		if s.Validate != nil {
+			if err := s.Validate(ctx, projectID, versionID); err != nil {
+				return err
+			}
+		}
 		var slug string
 		err := tx.QueryRow(`SELECT slug FROM published WHERE project_id = ?`, projectID).Scan(&slug)
 		if errors.Is(err, sql.ErrNoRows) {
@@ -111,6 +122,14 @@ func (s *Store) Rollback(ctx context.Context, projectID string) (Live, error) {
 		}
 		if parent == "" {
 			return ErrNoParent
+		}
+		// Checked here rather than in the handler: the parent is only known
+		// once resolved inside this transaction, so a pre-check would be
+		// validating a different version than the one about to go live.
+		if s.Validate != nil {
+			if err := s.Validate(ctx, projectID, parent); err != nil {
+				return err
+			}
 		}
 		if _, err := tx.Exec(`UPDATE published SET version_id = ?, published_at = ? WHERE project_id = ?`, parent, now(), projectID); err != nil {
 			return err
