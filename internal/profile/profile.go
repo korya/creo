@@ -5,11 +5,17 @@
 package profile
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/korya/creo/internal/model"
 )
+
+// ErrArtifactInvalid marks an artifact the vertical cannot serve. Callers
+// branch on it with errors.Is: the harness to decide whether a repair turn is
+// worth attempting, the API to translate the refusal into a sentence.
+var ErrArtifactInvalid = errors.New("artifact is not servable")
 
 // ExecutionLevel is the sandbox capability ladder (docs/components.md §5):
 // L0 no execution, L1 trusted tooling only, L2 arbitrary toolchain (container).
@@ -30,6 +36,11 @@ type Profile struct {
 	ExecutionLevel ExecutionLevel
 	CSP            string // served-content Content-Security-Policy (R-PUB-3)
 	SiteLanguage   string // explicit, never inferred (spike-01 finding)
+
+	// RequiredFiles are the slash-relative paths an artifact must contain,
+	// non-empty, to be worth calling a site. This is the minimal first form of
+	// the validators the catalog declares (docs/components.md §10).
+	RequiredFiles []string
 }
 
 // execTools names tool families that run arbitrary commands — permitted only
@@ -49,6 +60,28 @@ func (p Profile) ValidatePalette() error {
 			if name == ex || strings.HasPrefix(name, ex+"_") {
 				return fmt.Errorf("profile %s is %s but palette contains execution tool %q (needs L2)", p.ID, p.ExecutionLevel, t.Name)
 			}
+		}
+	}
+	return nil
+}
+
+// ValidateArtifact refuses a build that the serving gateway could not actually
+// serve. It is the other end of the run from ValidatePalette: that one stops a
+// vertical granting more capability than its level allows, this one stops it
+// declaring victory over something a visitor would get a 404 from.
+//
+// The paths must match exactly. A nested pages/index.html does not count,
+// because the gateway joins index.html onto the site root and nowhere else
+// (internal/serving/serving.go). A present-but-empty file does not count
+// either — it is unservable in the only way that matters to a visitor.
+func (p Profile) ValidateArtifact(files map[string]int64) error {
+	for _, want := range p.RequiredFiles {
+		size, ok := files[want]
+		if !ok {
+			return fmt.Errorf("%w: no %s", ErrArtifactInvalid, want)
+		}
+		if size == 0 {
+			return fmt.Errorf("%w: %s is empty", ErrArtifactInvalid, want)
 		}
 	}
 	return nil
@@ -144,6 +177,7 @@ func Websites() Profile {
 		CSP:            defaultCSP,
 		SiteLanguage:   "English",
 		MaxIterations:  40,
+		RequiredFiles:  []string{"index.html"},
 		System: `You are the build engine of a website builder for people who cannot code. You edit a static website in the workspace using the provided tools.
 
 Rules:
