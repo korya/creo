@@ -1,6 +1,7 @@
 package profile
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -73,5 +74,57 @@ func TestSiteLanguageSubstituted(t *testing.T) {
 	}
 	if strings.Contains(got, "{{SiteLanguage}}") {
 		t.Fatal("placeholder left unsubstituted")
+	}
+}
+
+// ValidateArtifact is the floor of the artifact policy: the palette check stops
+// a vertical granting too much, this stops it claiming a site that a visitor
+// would get a 404 from.
+func TestValidateArtifact(t *testing.T) {
+	web := Websites()
+	cases := []struct {
+		name  string
+		files map[string]int64
+		valid bool
+	}{
+		{"a real site", map[string]int64{"index.html": 2048, "css/style.css": 900}, true},
+		{"home page only", map[string]int64{"index.html": 12}, true},
+		{"styling but no page", map[string]int64{"css/style.css": 2114}, false},
+		{"nothing at all", map[string]int64{}, false},
+		// Written but empty is unservable in the only way that matters.
+		{"empty home page", map[string]int64{"index.html": 0, "css/style.css": 900}, false},
+		// The gateway joins index.html onto the root and nowhere else.
+		{"nested home page", map[string]int64{"pages/index.html": 2048}, false},
+		{"wrong case", map[string]int64{"Index.html": 2048}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			err := web.ValidateArtifact(c.files)
+			if c.valid && err != nil {
+				t.Fatalf("want servable, got %v", err)
+			}
+			if !c.valid {
+				if err == nil {
+					t.Fatal("want a refusal, got nil")
+				}
+				if !errors.Is(err, ErrArtifactInvalid) {
+					t.Fatalf("refusal must be branchable with errors.Is: %v", err)
+				}
+				// The message names the file so the harness can tell the model
+				// what to create.
+				if !strings.Contains(err.Error(), "index.html") {
+					t.Fatalf("refusal does not name the missing file: %v", err)
+				}
+			}
+		})
+	}
+}
+
+// A profile that requires nothing accepts anything — the gate is opt-in per
+// vertical, not a platform-wide opinion about what a project must contain.
+func TestValidateArtifactWithoutRequirements(t *testing.T) {
+	var p Profile
+	if err := p.ValidateArtifact(map[string]int64{}); err != nil {
+		t.Fatalf("no requirements should accept an empty artifact: %v", err)
 	}
 }
