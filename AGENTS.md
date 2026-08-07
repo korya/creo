@@ -143,3 +143,11 @@ API key), or `--model anthropic:claude-sonnet-5` with `ANTHROPIC_API_KEY` set
   and key-free; only `scripts/demo-m0.sh` talks to a real provider.
 - Crash/durability tests re-execute the test binary as a helper process — see
   `internal/eventlog/crash_test.go` for the pattern.
+- **Fake scripts must model outputs a real model could produce, including bad
+  ones.** The registry deliberately keeps adversarial scripts (`no-page`,
+  `hostile`) so the fleet cannot drift back to only cooperative models. It must
+  not drift into *impossible* ones either: `slow-site` spent four milestones
+  writing an eight-page website with no home page — an output no real build
+  should leave standing — and the whole suite passed, because nothing asserted a
+  version was servable. `assertServable` (`internal/e2e/helpers_test.go`) is now
+  that assertion; keep it wired after run-completion waits.
