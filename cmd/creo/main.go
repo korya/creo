@@ -73,7 +73,7 @@ func usage() {
 	fmt.Fprint(os.Stderr, `creo — self-hosted app building platform
 
 server:
-  creo serve   [--addr 127.0.0.1:8080] [--data ./data] [--model SPEC] [--insecure] [--allow-unsecured]
+  creo serve   [--addr 127.0.0.1:41090] [--data ./data] [--model SPEC] [--insecure] [--allow-unsecured]
 
 admin (local, operates on the data directory):
   creo tenant new NAME [--daily-tokens N] [--max-runs N] [--max-storage-mb N] [--data ./data]
@@ -287,9 +287,9 @@ func cmdAccount(args []string) error {
 
 func cmdServe(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
-	addr := fs.String("addr", "127.0.0.1:8080", "listen address")
+	addr := fs.String("addr", "127.0.0.1:41090", "listen address")
 	data := fs.String("data", "./data", "data directory")
-	serveAddr := fs.String("serve-addr", "127.0.0.1:8081", "listen address for published/preview sites")
+	serveAddr := fs.String("serve-addr", "127.0.0.1:41080", "listen address for published/preview sites")
 	publicURL := fs.String("public-url", "", "public base URL of serve-addr (default: http://serve-addr)")
 	modelSpec := fs.String("model", "anthropic:claude-sonnet-5",
 		"model spec: anthropic:<id>, openai:<id>[@<base-url>], or fake:<script>")
@@ -315,7 +315,7 @@ func cmdServe(args []string) error {
 }
 
 func serverFlag(fs *flag.FlagSet) *string {
-	return fs.String("server", envOr("CREO_SERVER", "http://127.0.0.1:8080"), "server URL")
+	return fs.String("server", envOr("CREO_SERVER", "http://127.0.0.1:41090"), "server URL")
 }
 
 func tokenFlag(fs *flag.FlagSet) *string {

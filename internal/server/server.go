@@ -34,8 +34,8 @@ import (
 
 type Config struct {
 	DataDir   string
-	Addr      string        // API, default 127.0.0.1:8080
-	ServeAddr string        // published/preview sites, default 127.0.0.1:8081
+	Addr      string        // API, default 127.0.0.1:41090
+	ServeAddr string        // published/preview sites, default 127.0.0.1:41080
 	PublicURL string        // base URL of ServeAddr as seen by clients
 	Model     string        // "anthropic:<model-id>" or "fake:<script>"
 	Workers   int           // default 2
@@ -63,7 +63,7 @@ type Server struct {
 
 func New(cfg Config) (*Server, error) {
 	if cfg.Addr == "" {
-		cfg.Addr = "127.0.0.1:8080"
+		cfg.Addr = "127.0.0.1:41090"
 	}
 	if cfg.Workers <= 0 {
 		cfg.Workers = 2
@@ -75,7 +75,7 @@ func New(cfg Config) (*Server, error) {
 		cfg.Model = "anthropic:claude-sonnet-5"
 	}
 	if cfg.ServeAddr == "" {
-		cfg.ServeAddr = "127.0.0.1:8081"
+		cfg.ServeAddr = "127.0.0.1:41080"
 	}
 	// An empty PublicURL is meaningful: links are then derived per request, so
 	// a phone on the LAN gets a host it can actually open. An explicit

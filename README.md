@@ -23,7 +23,7 @@ multi-device polish → M5 self-host release (`PRD.md` §9).
 cd web && npm ci && npm run build && cd ..   # build the client (once)
 go build -o creo ./cmd/creo
 ./creo serve --data ./data --model anthropic:claude-sonnet-5 --insecure
-# open http://127.0.0.1:8080 — describe a site, watch it build, click Publish
+# open http://127.0.0.1:41090 — describe a site, watch it build, click Publish
 ```
 
 (`--insecure` is loopback-only dev mode. For a real model set `ANTHROPIC_API_KEY`.)
@@ -34,12 +34,12 @@ go build -o creo ./cmd/creo
 go build -o creo ./cmd/creo
 
 # dev loop — no token ceremony (loopback only):
-./creo serve --data ./data --model fake:site --insecure &   # API :8080, sites :8081
+./creo serve --data ./data --model fake:site --insecure &   # API :41090, sites :41080
 ./creo project new my-site            # prints project + session ids
 ./creo say  <SESSION_ID> "build me a site"
 ./creo watch <SESSION_ID>             # live event stream
 ./creo preview <PROJECT_ID>           # preview URL for the latest version
-./creo publish <PROJECT_ID>           # -> live URL on :8081
+./creo publish <PROJECT_ID>           # -> live URL on :41080
 ./creo rollback <PROJECT_ID>          # revert to the previous version
 ./creo export  <PROJECT_ID> -o site.zip
 

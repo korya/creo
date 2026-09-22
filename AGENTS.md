@@ -21,7 +21,7 @@ internal/harness/    AgentHarness loop + embedded websites-v0 profile
 internal/tenant/     tenants: tokens, budget, run + storage quotas
 internal/identity/   human login: Authenticator seam, static driver, sessions
 internal/publish/    live-version pointer + preview capability secret (atomic publish/rollback)
-internal/serving/    PreviewGateway read side: origin-isolated site serving on :8081, CSP
+internal/serving/    PreviewGateway read side: origin-isolated site serving on :41080, CSP
 internal/profile/    ProductProfile: websites vertical as data (palette, exec level, CSP, language)
 internal/webui/      embeds web/dist; serves the SPA app shell at /
 internal/api/        HTTP + SSE API with bearer auth + tenant scoping (the only client surface)
@@ -46,7 +46,7 @@ the raw commands below rather than replacing them, so a checkout without `just`
 still works.
 
 ```sh
-just run                     # serve locally on :8080 (fake model, no API key)
+just run                     # serve locally on :41090 (fake model, no API key)
 just run anthropic:claude-sonnet-5   # real model; sources .env for the API key
 just build                   # web client, THEN the binary — Go embeds dist
 just test                    # fast tests (Go -short + vitest) — the inner loop
@@ -97,7 +97,7 @@ API key), or `--model anthropic:claude-sonnet-5` with `ANTHROPIC_API_KEY` set
 - **Two doors, one principal.** `api.auth` resolves a bearer token, a session
   cookie, or `--insecure` into one `identity.Principal`; handlers never learn
   which. Policy branches on `Assurance`, never on the driver name.
-- **Ports:** API `127.0.0.1:8080`; `:8081` reserved for served sites (M2).
+- **Ports:** API `127.0.0.1:41090`; `:41080` reserved for served sites (M2).
 - **Every `/v1` route is tenant-scoped.** New routes MUST resolve the caller's
   tenant (via the `auth` middleware) and scope their queries; a foreign or
   missing resource returns 404, never 403. New routes MUST get a cross-tenant
