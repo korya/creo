@@ -19,28 +19,28 @@ func TestPublicBase(t *testing.T) {
 		want      string
 	}{
 		{
-			name: "loopback stays loopback", servePort: "8081",
-			host: "127.0.0.1:8080", want: "http://127.0.0.1:8081",
+			name: "loopback stays loopback", servePort: "41080",
+			host: "127.0.0.1:41090", want: "http://127.0.0.1:41080",
 		},
 		{
-			name: "LAN host keeps the LAN address", servePort: "8081",
-			host: "192.168.1.10:8080", want: "http://192.168.1.10:8081",
+			name: "LAN host keeps the LAN address", servePort: "41080",
+			host: "192.168.1.10:41090", want: "http://192.168.1.10:41080",
 		},
 		{
-			name: "tailnet name survives", servePort: "8081",
-			host: "creo.tail1234.ts.net:8080", want: "http://creo.tail1234.ts.net:8081",
+			name: "tailnet name survives", servePort: "41080",
+			host: "creo.tail1234.ts.net:41090", want: "http://creo.tail1234.ts.net:41080",
 		},
 		{
-			name: "https when the request was TLS", servePort: "8081",
-			host: "creo.tail1234.ts.net", tls: true, want: "https://creo.tail1234.ts.net:8081",
+			name: "https when the request was TLS", servePort: "41080",
+			host: "creo.tail1234.ts.net", tls: true, want: "https://creo.tail1234.ts.net:41080",
 		},
 		{
 			name: "an explicit public URL always wins", publicURL: "https://sites.example.com",
-			servePort: "8081", host: "192.168.1.10:8080", want: "https://sites.example.com",
+			servePort: "41080", host: "192.168.1.10:41090", want: "https://sites.example.com",
 		},
 		{
-			name: "IPv6 host is bracketed", servePort: "8081",
-			host: "[fd7a:115c::1]:8080", want: "http://[fd7a:115c::1]:8081",
+			name: "IPv6 host is bracketed", servePort: "41080",
+			host: "[fd7a:115c::1]:41090", want: "http://[fd7a:115c::1]:41080",
 		},
 	}
 	for _, c := range cases {

@@ -53,10 +53,10 @@ hostname -I | awk '{print $1}' # Linux
 Start Creo bound to it, rather than to loopback:
 
 ```sh
-creo serve --addr 192.168.1.10:8080 --serve-addr 192.168.1.10:8081 --data ~/creo-data
+creo serve --addr 192.168.1.10:41090 --serve-addr 192.168.1.10:41080 --data ~/creo-data
 ```
 
-On any device in the house, open `http://192.168.1.10:8080`. Preview and
+On any device in the house, open `http://192.168.1.10:41090`. Preview and
 published links are generated from the address you connected on, so they open
 correctly on a phone — nothing points at `127.0.0.1`.
 
@@ -88,10 +88,10 @@ tailscale ip -4          # e.g. 100.101.102.103
 **2. Bind Creo to the tailnet address:**
 
 ```sh
-creo serve --addr 100.101.102.103:8080 --serve-addr 100.101.102.103:8081 --data ~/creo-data
+creo serve --addr 100.101.102.103:41090 --serve-addr 100.101.102.103:41080 --data ~/creo-data
 ```
 
-Open `http://100.101.102.103:8080` from any device on your tailnet, at home or
+Open `http://100.101.102.103:41090` from any device on your tailnet, at home or
 away. Creo treats Tailscale's address range (100.64.0.0/10) as private, so this
 needs no override.
 
@@ -99,8 +99,8 @@ needs no override.
 for your machine's MagicDNS name:
 
 ```sh
-tailscale serve --bg --https=443 http://127.0.0.1:8080
-tailscale serve --bg --https=8443 http://127.0.0.1:8081
+tailscale serve --bg --https=443 http://127.0.0.1:41090
+tailscale serve --bg --https=8443 http://127.0.0.1:41080
 ```
 
 Then run Creo on loopback and tell it the public name, so preview and publish
@@ -171,4 +171,4 @@ been open too long. Sign-in attempts expire after five minutes; reload.
 
 **A device cannot connect at all.** Check that Creo is bound to a routable
 address (`--addr`, not the default loopback) and that a local firewall allows
-ports 8080 and 8081.
+ports 41090 and 41080.

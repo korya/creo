@@ -11,8 +11,8 @@ export default defineConfig({
   server: {
     // `npm run dev` proxies API calls to a locally-running creo server.
     proxy: {
-      "/v1": "http://127.0.0.1:8080",
-      "/healthz": "http://127.0.0.1:8080",
+      "/v1": "http://127.0.0.1:41090",
+      "/healthz": "http://127.0.0.1:41090",
     },
   },
   test: { environment: "jsdom", globals: true },

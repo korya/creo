@@ -32,19 +32,19 @@ func TestCheckExposure(t *testing.T) {
 		ifaces         func() ([]net.Addr, error)
 		wantRefusal    bool
 	}{
-		{"loopback", "127.0.0.1:8080", true, false, privateOnly, false},
-		{"localhost name", "localhost:8080", true, false, privateOnly, false},
-		{"lan rfc1918", "192.168.1.10:8080", true, false, privateOnly, false},
-		{"lan 10/8", "10.0.0.5:8080", true, false, privateOnly, false},
-		{"tailscale cgnat", "100.101.102.103:8080", true, false, privateOnly, false},
-		{"ipv6 ula", "[fd7a:115c:a1e0::1]:8080", true, false, privateOnly, false},
-		{"public ip", "203.0.113.7:8080", true, false, privateOnly, true},
-		{"public ip, no static accounts", "203.0.113.7:8080", false, false, privateOnly, false},
-		{"public ip, override", "203.0.113.7:8080", true, true, privateOnly, false},
-		{"wildcard, private host", "0.0.0.0:8080", true, false, privateOnly, false},
-		{"wildcard, public interface", "0.0.0.0:8080", true, false, withPublic, true},
-		{"wildcard v6, public interface", "[::]:8080", true, false, withPublic, true},
-		{"unclassifiable hostname", "myhost.example.com:8080", true, false, privateOnly, true},
+		{"loopback", "127.0.0.1:41090", true, false, privateOnly, false},
+		{"localhost name", "localhost:41090", true, false, privateOnly, false},
+		{"lan rfc1918", "192.168.1.10:41090", true, false, privateOnly, false},
+		{"lan 10/8", "10.0.0.5:41090", true, false, privateOnly, false},
+		{"tailscale cgnat", "100.101.102.103:41090", true, false, privateOnly, false},
+		{"ipv6 ula", "[fd7a:115c:a1e0::1]:41090", true, false, privateOnly, false},
+		{"public ip", "203.0.113.7:41090", true, false, privateOnly, true},
+		{"public ip, no static accounts", "203.0.113.7:41090", false, false, privateOnly, false},
+		{"public ip, override", "203.0.113.7:41090", true, true, privateOnly, false},
+		{"wildcard, private host", "0.0.0.0:41090", true, false, privateOnly, false},
+		{"wildcard, public interface", "0.0.0.0:41090", true, false, withPublic, true},
+		{"wildcard v6, public interface", "[::]:41090", true, false, withPublic, true},
+		{"unclassifiable hostname", "myhost.example.com:41090", true, false, privateOnly, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
